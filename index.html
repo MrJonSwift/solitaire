@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Solitaire">
+  <meta name="theme-color" content="#0a5f33">
+  <title>Solitaire</title>
+  <!-- All paths are relative so the app also works from a sub-folder (e.g. GitHub Pages /Solitaire/). -->
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="js/app.js"></script>
+</head>
+<body>
+  <div id="app">
+    <main id="board" aria-label="Solitaire table"></main>
+    <!-- Icon-only toolbar. DOM order is for right-handed play (Undo far right, under the thumb);
+         .lefty reverses it. Icons are inline SVG so they work offline and take the text colour. -->
+    <nav id="toolbar">
+      <button id="btn-draw" type="button" aria-label="Draw 1 (tap to change)">
+        <svg viewBox="0 0 24 24"><rect x="5" y="2.5" width="14" height="19" rx="2.5"/><text class="num" x="12" y="16.5">1</text></svg>
+      </button>
+      <button id="btn-hand" type="button" aria-label="Right-handed layout (tap to switch)">
+        <svg viewBox="0 0 24 24"><g class="hand"><path d="M18 11V6a2 2 0 0 0-4 0"/><path d="M14 10V4a2 2 0 0 0-4 0v2"/><path d="M10 10.5V6a2 2 0 0 0-4 0v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-6-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></g></svg>
+        <span class="badge">R</span>
+      </button>
+      <button id="btn-new" type="button" aria-label="New deal">
+        <svg viewBox="0 0 24 24"><path d="M16 3h5v5"/><path d="M4 20 21 3"/><path d="M21 16v5h-5"/><path d="M15 15l6 6"/><path d="M4 4l5 5"/></svg>
+      </button>
+      <button id="btn-auto" type="button" aria-label="Finish automatically" hidden>
+        <svg viewBox="0 0 24 24"><path class="solid" d="M13 19l9-7-9-7v14zM2 19l9-7-9-7v14z"/></svg>
+      </button>
+      <button id="btn-undo" type="button" aria-label="Undo" disabled>
+        <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
+      </button>
+    </nav>
+  </div>
+  <canvas id="celebration" hidden></canvas>
+  <div id="modal" class="modal" role="dialog" aria-modal="true" hidden>
+    <div class="modal-box">
+      <h2 class="modal-title"></h2>
+      <p class="modal-message"></p>
+      <div class="modal-buttons"></div>
+    </div>
+  </div>
+</body>
+</html>
