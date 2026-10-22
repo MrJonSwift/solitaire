@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spike — card dancer</title>
+<style>
+  /* SPIKE — throwaway. Not app styling. */
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #0d3a2c; overflow: hidden; }
+  body { font: 12px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; color: #eaf3ec; }
+  #stage { position: fixed; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+  #hud {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 8px 10px calc(8px + env(safe-area-inset-bottom));
+    background: rgba(4, 18, 13, 0.72);
+    backdrop-filter: blur(6px);
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+    display: grid; gap: 6px;
+    user-select: none; -webkit-user-select: none;
+  }
+  html.nohud #hud { display: none; }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .row > * { flex: none; }
+  label { display: flex; align-items: center; gap: 6px; }
+  input[type=range] { width: 118px; accent-color: #7fdc9a; height: 22px; }
+  input[type=checkbox] { accent-color: #7fdc9a; width: 16px; height: 16px; }
+  button {
+    font: inherit; color: inherit; background: rgba(255,255,255,0.1);
+    border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; padding: 3px 10px;
+  }
+  button:active { background: rgba(255,255,255,0.25); }
+  .seg { display: flex; border: 1px solid rgba(255,255,255,0.25); border-radius: 6px; overflow: hidden; }
+  .seg label { padding: 3px 8px; cursor: pointer; }
+  .seg input { position: absolute; opacity: 0; pointer-events: none; }
+  .seg input:checked + span { color: #06281c; }
+  .seg label:has(input:checked) { background: #7fdc9a; color: #06281c; }
+  #scrub { width: 100%; }
+  #state {
+    position: fixed; left: 8px; right: 8px; top: calc(6px + env(safe-area-inset-top));
+    color: #9fbfae; font-size: 11px; line-height: 1.4;
+    background: rgba(4, 18, 13, 0.5); border-radius: 6px; padding: 4px 6px;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none;
+  }
+  #state b { color: #eaf3ec; font-weight: 600; }
+  html.nohud #state { display: none; }
+  #err {
+    position: fixed; inset: auto 12px 12px 12px; z-index: 10;
+    background: #7a1020; color: #fff; padding: 10px 12px; border-radius: 8px;
+    white-space: pre-wrap; font: 12px/1.4 ui-monospace, monospace;
+  }
+  #err:empty { display: none; }
+</style>
+</head>
+<body>
+<div id="stage"></div>
+
+<div id="hud">
+  <div class="row">
+    <div class="seg" role="group" aria-label="card treatment">
+      <label><input type="radio" name="style" value="queen"><span>queen</span></label>
+      <label><input type="radio" name="style" value="shell"><span>shell</span></label>
+      <label><input type="radio" name="style" value="plume"><span>plume</span></label>
+      <label><input type="radio" name="style" value="ribbon"><span>ribbon</span></label>
+    </div>
+    <label>cards <input id="cards" type="range" min="2" max="16" step="1"><span id="cardsv"></span></label>
+    <label><input id="head" type="checkbox"> queen head</label>
+    <label><input id="debug" type="checkbox"> skeleton</label>
+  </div>
+  <div class="row">
+    <label>dist <input id="dist" type="range" min="2" max="6.5" step="0.05"><span id="distv"></span></label>
+    <button id="play">pause</button>
+    <span id="timev">0.00s</span>
+  </div>
+  <div class="row"><input id="scrub" type="range" min="0" max="4" step="0.01"></div>
+</div>
+<div id="state"></div>
+<div id="err"></div>
+
+<script type="module" src="./main.js"></script>
+</body>
+</html>
