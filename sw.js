@@ -9,6 +9,7 @@ const VERSION = 'v5';
 const CACHE = `solitaire-${VERSION}`;
 const SHELL = [
   './',
+  './preview.html',
   './index.html',
   './styles.css',
   './manifest.webmanifest',
