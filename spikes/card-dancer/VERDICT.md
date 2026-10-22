@@ -4,7 +4,15 @@
 woman dancing a salsa step — clearly enough to be charming, and without landing in the uncanny
 valley or looking like a pile of cards?
 
-**Answer: no, not as a dancer. Abandon this round.** A figure wrapped in cards does read as a
+## Decision
+
+The spike's recommendation was **abandon**. The owner, who is the audience for this app,
+watched the loop and overruled it: the card woman is funny and charming enough to ship, and
+the audience is one person. It ships as-is; ticket 06 does the integration. The costs below
+are accepted with that decision, not argued away: a 265 KB gzipped dependency in an offline
+app, and no device frame-rate number yet.
+
+**The answer the spike found: no, not as a dancer.** A figure wrapped in cards does read as a
 woman — the skirt of fanned cards, the narrow waist and the Queen of Hearts for a head are
 immediately legible, and at t = 2 s the still is genuinely charming. What does not read is the
 *dance*. Across the four-second loop the silhouette barely changes: eight frames sampled at
