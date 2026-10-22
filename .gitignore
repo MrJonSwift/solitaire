@@ -4,6 +4,9 @@ context.md
 NEXT.md
 .scratch/
 
+# Local device preview harness — served by `npm start`, never published
+win-preview.html
+
 # Local environment files — secrets never get published
 .env
 .env.*

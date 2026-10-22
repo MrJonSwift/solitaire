@@ -1,9 +1,75 @@
 // Win celebration: the classic "bouncing cards" cascade, drawn on a full-screen canvas.
 // Cards leave trails because the canvas is intentionally not cleared between frames.
 import { SUIT_SYMBOLS, rankLabel, isRed } from './game.js';
+import { computeCelebrationGeometry } from './celebration-geometry.js';
 
 let raf = 0;
 let canvasEl = null;
+let removeViewportListeners = null;
+
+// The canvas box, not the window, is the truth. On iOS the two disagree while Safari
+// shows or hides its toolbars, and the fixed canvas can reach under the home indicator
+// even though #app's padding stops the board there.
+function readInsets(rect) {
+  const app = document.getElementById('app');
+  if (!app) return { top: 0, right: 0, bottom: 0, left: 0 };
+  const style = getComputedStyle(app);
+  const appRect = app.getBoundingClientRect();
+  const px = (value) => parseFloat(value) || 0;
+  // #app follows the dynamic viewport (100dvh) while the fixed canvas can stay as tall as
+  // the layout viewport when Safari's toolbar is showing. Count that hidden strip as inset.
+  const hiddenBelow = Math.max(0, rect.bottom - appRect.bottom);
+  return {
+    top: px(style.paddingTop),
+    right: px(style.paddingRight),
+    bottom: px(style.paddingBottom) + hiddenBelow,
+    left: px(style.paddingLeft),
+  };
+}
+
+function readStage(canvas) {
+  const rect = canvas.getBoundingClientRect();
+  return { rect, insets: readInsets(rect), dpr: window.devicePixelRatio || 1 };
+}
+
+function geometryFrom(stage, cw, ch) {
+  return computeCelebrationGeometry({
+    rect: stage.rect,
+    insets: stage.insets,
+    dpr: stage.dpr,
+    cardWidth: cw,
+    cardHeight: ch,
+  });
+}
+
+function measure(canvas, cw, ch) {
+  return geometryFrom(readStage(canvas), cw, ch);
+}
+
+function fitCanvas(canvas, geometry) {
+  canvas.width = geometry.pixelWidth;
+  canvas.height = geometry.pixelHeight;
+  const ctx = canvas.getContext('2d');
+  ctx.setTransform(geometry.dpr, 0, 0, geometry.dpr, 0, 0);
+  return ctx;
+}
+
+// The board re-renders on its own ResizeObserver, so the card size can change under a
+// running celebration (toolbar, rotation). Read it from the same custom properties the
+// board sets, and fall back to the size the celebration was started with.
+function readCardSize(fallbackW, fallbackH) {
+  const board = document.getElementById('board');
+  if (!board) return { cw: fallbackW, ch: fallbackH };
+  const style = getComputedStyle(board);
+  const size = (value, fallback) => {
+    const n = parseFloat(value);
+    return Number.isFinite(n) && n > 0 ? n : fallback;
+  };
+  return {
+    cw: size(style.getPropertyValue('--cw'), fallbackW),
+    ch: size(style.getPropertyValue('--ch'), fallbackH),
+  };
+}
 
 function makeSprite(card, cw, ch, dpr) {
   const c = document.createElement('canvas');
@@ -43,24 +109,53 @@ function makeSprite(card, cw, ch, dpr) {
 export function startCelebration(canvas, { cw, ch, piles }) {
   stopCelebration();
   canvasEl = canvas;
-  const dpr = window.devicePixelRatio || 1;
-  const W = window.innerWidth;
-  const H = window.innerHeight;
-  canvas.width = Math.round(W * dpr);
-  canvas.height = Math.round(H * dpr);
   canvas.hidden = false;
-  const ctx = canvas.getContext('2d');
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  let geometry = measure(canvas, cw, ch);
+  const ctx = fitCanvas(canvas, geometry);
 
-  // Kings first, then queens, and so on, cycling through the four foundations.
+  let cardW = cw;
+  let cardH = ch;
+  let spriteW = cw;
+  let spriteH = ch;
+  let spriteDpr = geometry.dpr;
+
+  // Kings first, then queens, and so on, cycling through the four foundations. Origins
+  // stay in viewport coordinates; each launch rebases them against the current canvas.
   const queue = [];
   for (let rank = 13; rank >= 1; rank--) {
-    for (const p of piles) {
+    for (let i = 0; i < piles.length; i++) {
+      const p = piles[i];
       const card = p.cards.find((c) => c.rank === rank);
-      if (card) queue.push({ sprite: makeSprite(card, cw, ch, dpr), x: p.x, y: p.y });
+      if (card) queue.push({ card, foundation: i, x: p.x, y: p.y, sprite: makeSprite(card, cw, ch, geometry.dpr) });
     }
   }
   if (!queue.length) return;
+
+  // The foundations are live slots: the board may move them while the celebration runs.
+  const foundationEls = Array.from(document.querySelectorAll('#board .slot.foundation'));
+  const pileOrigin = (item) => {
+    const el = foundationEls[item.foundation];
+    if (!el) return item;
+    const rect = el.getBoundingClientRect();
+    return { x: rect.left, y: rect.top };
+  };
+
+  const refreshSprites = () => {
+    if (cardW === spriteW && cardH === spriteH && geometry.dpr === spriteDpr) return;
+    spriteW = cardW;
+    spriteH = cardH;
+    spriteDpr = geometry.dpr;
+    for (const item of queue) item.sprite = makeSprite(item.card, cardW, cardH, spriteDpr);
+  };
+
+  const syncCardSize = () => {
+    const size = readCardSize(cardW, cardH);
+    const changed = size.cw !== cardW || size.ch !== cardH;
+    cardW = size.cw;
+    cardH = size.ch;
+    refreshSprites();
+    return changed;
+  };
 
   const scale = cw / 60;
   const gravity = 0.45 * scale;
@@ -70,13 +165,55 @@ export function startCelebration(canvas, { cw, ch, piles }) {
   const active = [];
 
   const launch = () => {
-    if (next > 0 && next % queue.length === 0) ctx.clearRect(0, 0, W, H); // start a fresh round
+    // The board's ResizeObserver can update the card size just after our frame runs.
+    // Re-read here so new launches always use the live size and floor.
+    if (syncCardSize()) geometry = measure(canvas, cardW, cardH);
+    if (next > 0 && next % queue.length === 0) ctx.clearRect(0, 0, geometry.width, geometry.height); // start a fresh round
     const item = queue[next++ % queue.length];
+    const origin = pileOrigin(item);
     const dir = Math.random() < 0.5 ? -1 : 1;
-    active.push({ ...item, vx: dir * (2 + Math.random() * 4) * scale, vy: -Math.random() * 7 * scale });
+    active.push({
+      sprite: item.sprite,
+      x: origin.x - geometry.left,
+      y: origin.y - geometry.top,
+      w: cardW,
+      h: cardH,
+      vx: dir * (2 + Math.random() * 4) * scale,
+      vy: -Math.random() * 7 * scale,
+    });
+  };
+
+  // Resize events can arrive in bursts while the toolbar animates. Mark dirty and do the
+  // measuring once in the next frame, never on the event itself. A fixed canvas does not
+  // move when the visual viewport scrolls, so scroll is deliberately not observed.
+  let dirty = false;
+  const applyViewportChange = () => {
+    if (!canvasEl || canvasEl.hidden) return;
+    const stage = readStage(canvasEl);
+    const size = readCardSize(cardW, cardH);
+    cardW = size.cw;
+    cardH = size.ch;
+    const nextGeometry = geometryFrom(stage, cardW, cardH);
+    const realloc = nextGeometry.pixelWidth !== geometry.pixelWidth
+      || nextGeometry.pixelHeight !== geometry.pixelHeight
+      || nextGeometry.dpr !== geometry.dpr;
+    geometry = nextGeometry;
+    // Reallocating clears the canvas, so only do it when the backing store really changed.
+    // An origin-only change just rebases the next launch and leaves the trails alone.
+    if (realloc) fitCanvas(canvasEl, nextGeometry);
+    refreshSprites();
+  };
+  const handleViewportChange = () => { dirty = true; };
+  window.addEventListener('resize', handleViewportChange);
+  const viewport = window.visualViewport;
+  if (viewport) viewport.addEventListener('resize', handleViewportChange);
+  removeViewportListeners = () => {
+    window.removeEventListener('resize', handleViewportChange);
+    if (viewport) viewport.removeEventListener('resize', handleViewportChange);
   };
 
   const frame = (now) => {
+    if (dirty) { dirty = false; applyViewportChange(); }
     const dt = Math.min(3, (now - last) / 16.667);
     last = now;
     if (now - lastLaunch > 450) { launch(); lastLaunch = now; }
@@ -85,9 +222,9 @@ export function startCelebration(canvas, { cw, ch, piles }) {
       a.vy += gravity * dt;
       a.x += a.vx * dt;
       a.y += a.vy * dt;
-      if (a.y + ch > H) { a.y = H - ch; a.vy = -a.vy * 0.78; }
-      ctx.drawImage(a.sprite, a.x, a.y, cw, ch);
-      if (a.x > W || a.x + cw < 0) active.splice(i, 1);
+      if (a.y > geometry.floorY) { a.y = geometry.floorY; a.vy = -a.vy * 0.78; }
+      ctx.drawImage(a.sprite, a.x, a.y, a.w, a.h);
+      if (a.x > geometry.width || a.x + a.w < 0) active.splice(i, 1);
     }
     raf = requestAnimationFrame(frame);
   };
@@ -97,8 +234,14 @@ export function startCelebration(canvas, { cw, ch, piles }) {
 export function stopCelebration() {
   cancelAnimationFrame(raf);
   raf = 0;
+  if (removeViewportListeners) { removeViewportListeners(); removeViewportListeners = null; }
   if (canvasEl) {
-    canvasEl.getContext('2d').clearRect(0, 0, canvasEl.width, canvasEl.height);
+    const ctx = canvasEl.getContext('2d');
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
+    ctx.restore();
     canvasEl.hidden = true;
   }
+  canvasEl = null;
 }

@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node scripts/serve.js",
+    "check": "node --check js/app.js && node --check js/game.js && node --check js/celebrate.js && node --check js/celebration-geometry.js && node --check scripts/serve.js && node --check sw.js",
     "test": "node --test"
   }
 }
