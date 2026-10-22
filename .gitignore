@@ -3,3 +3,8 @@ AGENTS.md
 context.md
 NEXT.md
 .scratch/
+
+# Local environment files — secrets never get published
+.env
+.env.*
+!.env.example
