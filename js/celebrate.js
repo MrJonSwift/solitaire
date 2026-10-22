@@ -4,39 +4,13 @@
 import { SUIT_SYMBOLS, rankLabel, isRed } from './game.js';
 import { computeCelebrationGeometry } from './celebration-geometry.js';
 import { buildWinSequence, sampleSequence } from './choreography.js';
-
-const FADE_MS = 400; // the whole canvas dims out; washing the trails with a fill would look dirty
-const SKIP_FADE_MS = 180; // a tap still gets an ending, just a quicker one
+import { startDancer } from './dancer.js';
+import { readStage, FADE_MS, SKIP_FADE_MS } from './celebration-stage.js';
 
 let raf = 0;
 let canvasEl = null;
 let removeListeners = null;
 let session = null;
-
-// The canvas box, not the window, is the truth. On iOS the two disagree while Safari
-// shows or hides its toolbars, and the fixed canvas can reach under the home indicator
-// even though #app's padding stops the board there.
-function readInsets(rect) {
-  const app = document.getElementById('app');
-  if (!app) return { top: 0, right: 0, bottom: 0, left: 0 };
-  const style = getComputedStyle(app);
-  const appRect = app.getBoundingClientRect();
-  const px = (value) => parseFloat(value) || 0;
-  // #app follows the dynamic viewport (100dvh) while the fixed canvas can stay as tall as
-  // the layout viewport when Safari's toolbar is showing. Count that hidden strip as inset.
-  const hiddenBelow = Math.max(0, rect.bottom - appRect.bottom);
-  return {
-    top: px(style.paddingTop),
-    right: px(style.paddingRight),
-    bottom: px(style.paddingBottom) + hiddenBelow,
-    left: px(style.paddingLeft),
-  };
-}
-
-function readStage(canvas) {
-  const rect = canvas.getBoundingClientRect();
-  return { rect, insets: readInsets(rect), dpr: window.devicePixelRatio || 1 };
-}
 
 function geometryFrom(stage, cw, ch) {
   return computeCelebrationGeometry({
@@ -153,7 +127,7 @@ function beginFade(ms) {
   session.fadeTimer = setTimeout(() => teardown(true), ms + 60);
 }
 
-export function startCelebration(canvas, {
+export function startWaterfall(canvas, {
   cw, ch, piles = [], cards = [], seed = 1, variant = 'waterfall', launchMs,
 } = {}) {
   stopCelebration();
@@ -234,22 +208,9 @@ export function startCelebration(canvas, {
   const viewport = window.visualViewport;
   if (viewport) viewport.addEventListener('resize', handleViewportChange);
 
-  // A tap during the celebration skips to the win card. Capture on the board keeps the
-  // pointer from reaching the drag/shake handlers underneath; the toolbar still works, so
-  // "New deal" can cancel the celebration outright.
-  const board = document.getElementById('board');
-  const onBoardPointerDown = (e) => {
-    if (!session) return;
-    e.preventDefault();
-    e.stopPropagation();
-    beginFade(SKIP_FADE_MS);
-  };
-  if (board) board.addEventListener('pointerdown', onBoardPointerDown, true);
-
   removeListeners = () => {
     window.removeEventListener('resize', handleViewportChange);
     if (viewport) viewport.removeEventListener('resize', handleViewportChange);
-    if (board) board.removeEventListener('pointerdown', onBoardPointerDown, true);
   };
 
   const frame = (now) => {
@@ -285,11 +246,96 @@ export function startCelebration(canvas, {
     raf = requestAnimationFrame(frame);
   });
 
-  return { finished, stop: () => beginFade(SKIP_FADE_MS) };
+  return { finished, stop: () => beginFade(SKIP_FADE_MS), cancel: () => teardown(false) };
+}
+
+// One tap skips either renderer. Capture on the board keeps the pointer from reaching the
+// drag and shake handlers underneath, so the board never treats the skip as a card move.
+// The toolbar stays outside the board, so "New deal" can still cancel outright.
+let activeCelebration = null;
+let detachSkip = null;
+
+function attachSkip(skip) {
+  detachSkip?.();
+  detachSkip = null;
+  const board = document.getElementById('board');
+  if (!board) return;
+  const onBoardPointerDown = (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    skip();
+  };
+  board.addEventListener('pointerdown', onBoardPointerDown, true);
+  detachSkip = () => board.removeEventListener('pointerdown', onBoardPointerDown, true);
+}
+
+function releaseSkip() {
+  detachSkip?.();
+  detachSkip = null;
+}
+
+// Can this browser draw WebGL at all? Asked on a throwaway canvas before any of the dancer
+// exists, so "no WebGL here" is decided up front instead of by catching a failure later.
+// The probe context is released again: phones allow only a handful of live contexts, and
+// this one has no other purpose than the answer.
+function hasWebGL() {
+  try {
+    const probe = document.createElement('canvas');
+    const gl = probe.getContext('webgl2') || probe.getContext('webgl');
+    if (!gl) return false;
+    gl.getExtension('WEBGL_lose_context')?.loseContext();
+    return true;
+  } catch {
+    return false; // some browsers throw instead of returning null
+  }
+}
+
+// The only entry point app.js uses. The dancer owns the screen when WebGL works; the
+// waterfall is the fallback when it does not. Both report completion so the win card can
+// follow, and both are skipped by the one handler above.
+//
+// The two failures are handled differently on purpose. A browser without WebGL is a device
+// condition we expect, so the waterfall simply takes over and the player still gets a
+// celebration. A browser that has WebGL and still throws while building the dancer is our
+// own bug: it is reported to the console, and the waterfall still plays, because a won game
+// must reach its win card whatever we got wrong in the decoration.
+export function startCelebration(canvas, options = {}) {
+  stopCelebration();
+
+  let renderer = null;
+  if (hasWebGL()) {
+    try {
+      renderer = startDancer();
+    } catch (err) {
+      console.warn('Card dancer failed to start; this is a bug, not a missing WebGL.', err);
+      renderer = null;
+    }
+  }
+  if (!renderer) renderer = startWaterfall(canvas, options);
+
+  const entry = {
+    finished: renderer.finished,
+    stop: () => renderer.stop(),
+    cancel: () => renderer.cancel(),
+  };
+  activeCelebration = entry;
+  attachSkip(entry.stop);
+  // Natural end, skip and hard cancel all settle the same promise; clear up once.
+  entry.finished.then(() => {
+    if (activeCelebration === entry) {
+      activeCelebration = null;
+      releaseSkip();
+    }
+  });
+  return { finished: entry.finished, stop: entry.stop };
 }
 
 // Hard cancel: used when the board is replaced. Never leaves content behind or a promise
 // pending for the old win card.
 export function stopCelebration() {
-  teardown(false);
+  const current = activeCelebration;
+  if (!current) return;
+  activeCelebration = null;
+  releaseSkip();
+  current.cancel();
 }
