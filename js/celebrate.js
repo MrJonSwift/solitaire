@@ -1,11 +1,17 @@
-// Win celebration: the classic "bouncing cards" cascade, drawn on a full-screen canvas.
-// Cards leave trails because the canvas is intentionally not cleared between frames.
+// Win celebration: one pass of the classic "bouncing cards" cascade, drawn on a full-screen
+// canvas. Cards leave trails because the canvas is intentionally not cleared between frames.
+// The sequence itself comes from the pure choreography module; this file only draws and fades.
 import { SUIT_SYMBOLS, rankLabel, isRed } from './game.js';
 import { computeCelebrationGeometry } from './celebration-geometry.js';
+import { buildWinSequence, sampleSequence } from './choreography.js';
+
+const FADE_MS = 400; // the whole canvas dims out; washing the trails with a fill would look dirty
+const SKIP_FADE_MS = 180; // a tap still gets an ending, just a quicker one
 
 let raf = 0;
 let canvasEl = null;
-let removeViewportListeners = null;
+let removeListeners = null;
+let session = null;
 
 // The canvas box, not the window, is the truth. On iOS the two disagree while Safari
 // shows or hides its toolbars, and the fixed canvas can reach under the home indicator
@@ -106,90 +112,105 @@ function makeSprite(card, cw, ch, dpr) {
   return c;
 }
 
-export function startCelebration(canvas, { cw, ch, piles }) {
+function clearCanvas(canvas) {
+  const ctx = canvas.getContext('2d');
+  ctx.save();
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.restore();
+}
+
+// Tear the current celebration down. `completed` tells onWin whether the player reached the
+// end (naturally or by skipping) or the celebration was cancelled by a new deal.
+function teardown(completed) {
+  if (!session) return;
+  const current = session;
+  session = null;
+  cancelAnimationFrame(raf);
+  raf = 0;
+  clearTimeout(current.fadeTimer);
+  if (removeListeners) { removeListeners(); removeListeners = null; }
+  clearCanvas(current.canvas);
+  current.canvas.hidden = true;
+  current.canvas.style.transition = '';
+  current.canvas.style.opacity = '';
+  if (canvasEl === current.canvas) canvasEl = null;
+  current.resolve(completed);
+}
+
+function beginFade(ms) {
+  if (!session || session.fading) return;
+  session.fading = true;
+  cancelAnimationFrame(raf);
+  raf = 0;
+  const canvas = session.canvas;
+  // Start from the current opacity so the transition always runs, even after a skip.
+  void canvas.offsetWidth;
+  canvas.style.transition = `opacity ${ms}ms ease-out`;
+  canvas.style.opacity = '0';
+  // Timers, not transitionend: a background tab can freeze transitions, and the win card
+  // must never wait on an event that will not arrive.
+  session.fadeTimer = setTimeout(() => teardown(true), ms + 60);
+}
+
+export function startCelebration(canvas, {
+  cw, ch, piles = [], cards = [], seed = 1, variant = 'waterfall', launchMs,
+} = {}) {
   stopCelebration();
   canvasEl = canvas;
   canvas.hidden = false;
-  let geometry = measure(canvas, cw, ch);
-  const ctx = fitCanvas(canvas, geometry);
+  canvas.style.transition = 'none';
+  canvas.style.opacity = '1';
 
+  let geometry = measure(canvas, cw, ch);
+  let ctx = fitCanvas(canvas, geometry);
   let cardW = cw;
   let cardH = ch;
-  let spriteW = cw;
-  let spriteH = ch;
-  let spriteDpr = geometry.dpr;
+  let sprites = new Map();
 
-  // Kings first, then queens, and so on, cycling through the four foundations. Origins
-  // stay in viewport coordinates; each launch rebases them against the current canvas.
-  const queue = [];
-  for (let rank = 13; rank >= 1; rank--) {
-    for (let i = 0; i < piles.length; i++) {
-      const p = piles[i];
-      const card = p.cards.find((c) => c.rank === rank);
-      if (card) queue.push({ card, foundation: i, x: p.x, y: p.y, sprite: makeSprite(card, cw, ch, geometry.dpr) });
+  const allCards = cards.length ? cards : piles.flatMap((p) => p.cards || []);
+  const cardById = new Map(allCards.map((c) => [c.id || c.suit + c.rank, c]));
+
+  const spriteFor = (id) => {
+    let sprite = sprites.get(id);
+    if (!sprite) {
+      const suit = id.slice(0, 1);
+      const rank = Number(id.slice(1));
+      const card = cardById.get(id) || { suit, rank };
+      sprite = makeSprite(card, cardW, cardH, geometry.dpr);
+      sprites.set(id, sprite);
     }
-  }
-  if (!queue.length) return;
-
-  // The foundations are live slots: the board may move them while the celebration runs.
-  const foundationEls = Array.from(document.querySelectorAll('#board .slot.foundation'));
-  const pileOrigin = (item) => {
-    const el = foundationEls[item.foundation];
-    if (!el) return item;
-    const rect = el.getBoundingClientRect();
-    return { x: rect.left, y: rect.top };
+    return sprite;
   };
 
-  const refreshSprites = () => {
-    if (cardW === spriteW && cardH === spriteH && geometry.dpr === spriteDpr) return;
-    spriteW = cardW;
-    spriteH = cardH;
-    spriteDpr = geometry.dpr;
-    for (const item of queue) item.sprite = makeSprite(item.card, cardW, cardH, spriteDpr);
-  };
+  const makeSequence = () => buildWinSequence({
+    variant,
+    cards: allCards,
+    piles,
+    cw: cardW,
+    ch: cardH,
+    seed,
+    launchMs,
+    viewport: {
+      width: geometry.width,
+      height: geometry.height,
+      floorY: geometry.floorY,
+      left: geometry.left,
+      top: geometry.top,
+    },
+  });
 
-  const syncCardSize = () => {
-    const size = readCardSize(cardW, cardH);
-    const changed = size.cw !== cardW || size.ch !== cardH;
-    cardW = size.cw;
-    cardH = size.ch;
-    refreshSprites();
-    return changed;
-  };
-
-  const scale = cw / 60;
-  const gravity = 0.45 * scale;
-  let next = 0;
-  let lastLaunch = -Infinity;
-  let last = performance.now();
-  const active = [];
-
-  const launch = () => {
-    // The board's ResizeObserver can update the card size just after our frame runs.
-    // Re-read here so new launches always use the live size and floor.
-    if (syncCardSize()) geometry = measure(canvas, cardW, cardH);
-    if (next > 0 && next % queue.length === 0) ctx.clearRect(0, 0, geometry.width, geometry.height); // start a fresh round
-    const item = queue[next++ % queue.length];
-    const origin = pileOrigin(item);
-    const dir = Math.random() < 0.5 ? -1 : 1;
-    active.push({
-      sprite: item.sprite,
-      x: origin.x - geometry.left,
-      y: origin.y - geometry.top,
-      w: cardW,
-      h: cardH,
-      vx: dir * (2 + Math.random() * 4) * scale,
-      vy: -Math.random() * 7 * scale,
-    });
-  };
+  let sequence = makeSequence();
+  const startedAt = performance.now();
 
   // Resize events can arrive in bursts while the toolbar animates. Mark dirty and do the
   // measuring once in the next frame, never on the event itself. A fixed canvas does not
   // move when the visual viewport scrolls, so scroll is deliberately not observed.
   let dirty = false;
+  const handleViewportChange = () => { dirty = true; };
   const applyViewportChange = () => {
-    if (!canvasEl || canvasEl.hidden) return;
-    const stage = readStage(canvasEl);
+    if (!session || session.canvas.hidden) return;
+    const stage = readStage(session.canvas);
     const size = readCardSize(cardW, cardH);
     cardW = size.cw;
     cardH = size.ch;
@@ -198,50 +219,77 @@ export function startCelebration(canvas, { cw, ch, piles }) {
       || nextGeometry.pixelHeight !== geometry.pixelHeight
       || nextGeometry.dpr !== geometry.dpr;
     geometry = nextGeometry;
-    // Reallocating clears the canvas, so only do it when the backing store really changed.
-    // An origin-only change just rebases the next launch and leaves the trails alone.
-    if (realloc) fitCanvas(canvasEl, nextGeometry);
-    refreshSprites();
+    // Reallocating clears the canvas anyway, so only do it when the backing store changed.
+    if (realloc) {
+      ctx = fitCanvas(session.canvas, nextGeometry);
+      sprites = new Map(); // rasterised at the old device ratio and card size
+    } else {
+      sprites = new Map();
+    }
+    // Rebuild on the new stage so the floor and the side walls stay truthful. The launch
+    // times are unchanged, so the pass still ends on the original schedule.
+    sequence = makeSequence();
   };
-  const handleViewportChange = () => { dirty = true; };
   window.addEventListener('resize', handleViewportChange);
   const viewport = window.visualViewport;
   if (viewport) viewport.addEventListener('resize', handleViewportChange);
-  removeViewportListeners = () => {
+
+  // A tap during the celebration skips to the win card. Capture on the board keeps the
+  // pointer from reaching the drag/shake handlers underneath; the toolbar still works, so
+  // "New deal" can cancel the celebration outright.
+  const board = document.getElementById('board');
+  const onBoardPointerDown = (e) => {
+    if (!session) return;
+    e.preventDefault();
+    e.stopPropagation();
+    beginFade(SKIP_FADE_MS);
+  };
+  if (board) board.addEventListener('pointerdown', onBoardPointerDown, true);
+
+  removeListeners = () => {
     window.removeEventListener('resize', handleViewportChange);
     if (viewport) viewport.removeEventListener('resize', handleViewportChange);
+    if (board) board.removeEventListener('pointerdown', onBoardPointerDown, true);
   };
 
   const frame = (now) => {
+    if (!session) return;
     if (dirty) { dirty = false; applyViewportChange(); }
-    const dt = Math.min(3, (now - last) / 16.667);
-    last = now;
-    if (now - lastLaunch > 450) { launch(); lastLaunch = now; }
-    for (let i = active.length - 1; i >= 0; i--) {
-      const a = active[i];
-      a.vy += gravity * dt;
-      a.x += a.vx * dt;
-      a.y += a.vy * dt;
-      if (a.y > geometry.floorY) { a.y = geometry.floorY; a.vy = -a.vy * 0.78; }
-      ctx.drawImage(a.sprite, a.x, a.y, a.w, a.h);
-      if (a.x > geometry.width || a.x + a.w < 0) active.splice(i, 1);
+    const t = now - startedAt;
+    if (t >= sequence.duration) {
+      beginFade(FADE_MS);
+      return;
+    }
+    for (const card of sampleSequence(sequence, t)) {
+      if (card.alpha <= 0) continue;
+      const sprite = spriteFor(card.id);
+      ctx.save();
+      ctx.globalAlpha = card.alpha;
+      const x = card.x + cardW / 2;
+      const y = card.y + cardH / 2;
+      ctx.translate(x, y);
+      if (card.rotation) ctx.rotate(card.rotation);
+      ctx.drawImage(sprite, -cardW / 2, -cardH / 2, cardW, cardH);
+      ctx.restore();
     }
     raf = requestAnimationFrame(frame);
   };
-  raf = requestAnimationFrame(frame);
+
+  const finished = new Promise((resolve) => {
+    session = {
+      canvas,
+      resolve,
+      fading: false,
+      fadeTimer: 0,
+    };
+    raf = requestAnimationFrame(frame);
+  });
+
+  return { finished, stop: () => beginFade(SKIP_FADE_MS) };
 }
 
+// Hard cancel: used when the board is replaced. Never leaves content behind or a promise
+// pending for the old win card.
 export function stopCelebration() {
-  cancelAnimationFrame(raf);
-  raf = 0;
-  if (removeViewportListeners) { removeViewportListeners(); removeViewportListeners = null; }
-  if (canvasEl) {
-    const ctx = canvasEl.getContext('2d');
-    ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    ctx.restore();
-    canvasEl.hidden = true;
-  }
-  canvasEl = null;
+  teardown(false);
 }
