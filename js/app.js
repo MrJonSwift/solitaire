@@ -49,6 +49,7 @@ let layout = null;
 let current = { pos: new Map(), locs: new Map() };
 let drag = null;
 let busy = false; // true while auto-complete is animating
+let winRun = 0; // invalidates the win hand-off when a new deal starts mid-celebration
 
 // ---------- DOM setup ----------
 function makeSlot(cls, label = '') {
@@ -293,20 +294,26 @@ async function runAutoComplete() {
   if (state.won) onWin();
 }
 
-async function onWin() {
-  await sleep(400);
-  if (!state.won) return;
-  if (!reducedMotion) {
+async function onWin({ celebrate = true } = {}) {
+  const run = ++winRun;
+  if (celebrate) await sleep(400);
+  if (run !== winRun || !state.won) return;
+  if (celebrate && !reducedMotion) {
     const rect = board.getBoundingClientRect();
-    startCelebration(canvas, {
+    const celebration = startCelebration(canvas, {
       cw: layout.cw,
       ch: layout.ch,
+      cards: state.foundations.flat(),
       piles: state.foundations.map((f, i) => ({
         x: rect.left + layout.foundations[i].x,
         y: rect.top + layout.foundations[i].y,
-        cards: f.map((c) => ({ rank: c.rank, suit: c.suit })),
+        cards: f.map((c) => ({ id: c.id, rank: c.rank, suit: c.suit })),
       })),
     });
+    // The win card follows the animation. Skipping ends the wait early; a new deal
+    // cancels it and is caught by the run check above.
+    await celebration.finished;
+    if (run !== winRun || !state.won) return;
   }
   showModal({
     title: 'You won!',
@@ -317,6 +324,7 @@ async function onWin() {
 }
 
 function dealNew() {
+  winRun++;
   stopCelebration();
   hideModal();
   state = newGame({ drawCount: settings.drawCount });
@@ -491,7 +499,9 @@ new ResizeObserver(() => { if (!drag) render({ animate: false }); }).observe(boa
 
 // ---------- Start ----------
 render({ animate: false });
-if (state.won) onWin();
+// A reload of an already-won game goes straight to the card: replaying six seconds of
+// animation on every launch is worse than showing the result immediately.
+if (state.won) onWin({ celebrate: false });
 else maybePromptAutoComplete();
 
 // Offline support. Skipped on localhost so development always loads fresh files.
