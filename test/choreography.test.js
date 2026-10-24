@@ -524,12 +524,36 @@ test('shuffle alphas are on or off, never a private fade', () => {
   }
 });
 
+test('the shuffle exit is one steady slide off the bottom', () => {
+  // The exit is deliberately off the stage: the deck leaves through the bottom edge, and the
+  // win card opens behind it. Wrong direction, sideways drift or a frame jump in that
+  // hand-over would otherwise be invisible to the tests that stop at item.exit.
+  const sequence = shuffle();
+  const frame = 16;
+  for (const item of sequence.items) {
+    let previous = null;
+    for (let t = item.exit; t <= sequence.duration; t += frame) {
+      const card = sampleSequence(sequence, t).find((c) => c.id === item.id);
+      if (previous && previous.alpha > 0 && card.alpha > 0) {
+        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+        assert.ok(moved <= 16, `${item.id} jumped ${moved.toFixed(1)}px at ${t}ms`);
+        assert.ok(card.y >= previous.y - 1e-9, `${item.id} moved back up at ${t}ms`);
+        assert.ok(Math.abs(card.x - previous.x) < 1e-9, `${item.id} drifted sideways at ${t}ms`);
+      }
+      previous = card;
+    }
+    const end = sampleSequence(sequence, sequence.duration).find((c) => c.id === item.id);
+    assert.equal(end.alpha, 0, `${item.id} is still on the stage at the end`);
+  }
+});
+
 test('the shuffle frames itself from a 320px phone to a landscape iPad, without a jump', () => {
   const stages = [
     { name: 'smallest phone', width: 320, height: 568, cw: 42, ch: 59 },
     { name: 'phone', width: 393, height: 852, cw: 48, ch: 67 },
     { name: 'iPad', width: 1024, height: 768, cw: 105, ch: 147 },
     { name: 'iPad Pro landscape', width: 1366, height: 1024, cw: 130, ch: 182 },
+    { name: 'wide desktop', width: 1920, height: 1080, cw: 160, ch: 224 },
   ];
   for (const stage of stages) {
     const cards = createDeck().map((c) => ({ ...c, faceUp: true }));

@@ -623,11 +623,12 @@ function congaSway(geometry, distance, now) {
 // a short stack of visible edges, not a single card. Two packets of those, crossing, is the
 // whole trick: at 320px the eye sees a handful of interleaved edges, which is a shuffle.
 const SHUFFLE_STAGGER_MS = 14;        // one card leaves its foundation every 14ms
-const SHUFFLE_GATHER_RATE = 1.9;      // ms of flight per px of gap. Smoothstep peaks at 1.5x
+const SHUFFLE_GATHER_RATE = 1.55;     // ms of flight per px of gap. Smoothstep peaks at 1.5x
                                       // the average speed, so the far cards still step under
-                                      // 16px a frame on a tablet.
+                                      // 16px a frame. Deliberately no upper cap: the rate is
+                                      // the frame budget, and capping the flight would break it
+                                      // on a stage whose far foundation is a long way away.
 const SHUFFLE_GATHER_MIN_MS = 500;
-const SHUFFLE_GATHER_MAX_MS = 2600;
 const SHUFFLE_HOLD_MS = 200;          // the finished deck rests for a beat before the split
 const SHUFFLE_MIN_RIFFLE_MS = 2000;   // the earliest the riffle may start. On a phone the deck
                                       // is complete well before this; on a big stage the wait
@@ -643,12 +644,17 @@ const SHUFFLE_SNAP_HOLD_MS = 450;     // the squared deck sits before it leaves
 const SHUFFLE_TILT = 0.3;             // radians of packet tilt, about 17 degrees
 const SHUFFLE_APPROACH_TILT = 0.45;   // how much of the tilt is left when the halves meet
 const SHUFFLE_SPLIT_SEP = 0.8;        // half separation at full split, of card width
-const SHUFFLE_APPROACH_SEP = 0.15;    // half separation when they cross, of card width
+const SHUFFLE_APPROACH_SEP = 0.45;    // half separation when they cross, of card width. Wide
+                                      // enough that the two fans stay two packets at 320px,
+                                      // narrow enough that their inner cards still overlap.
 const SHUFFLE_LIFT = 0.35;            // packet lift, of card height
-const SHUFFLE_PACKET_STEP = 0.03;     // neighbour offset inside one half, of card width
+const SHUFFLE_PACKET_STEP = 0.04;     // neighbour offset inside one half, of card width. The
+                                      // visible edges are the riffle, so they need to read.
 const SHUFFLE_DECK_GAP = 0.05;        // lattice spacing, of card width
 const SHUFFLE_DECK_COLS = 7;
-const SHUFFLE_EXIT_SPEED = 0.8;       // px per ms, straight down and off the bottom
+const SHUFFLE_EXIT_SPEED = 0.99;      // px per ms, straight down and off the bottom. Just
+                                      // under the 16px-a-frame cap, so a wide stage's longer
+                                      // slide still fits the pass's six-to-seven-second window.
 const SHUFFLE_EXIT_MIN_MS = 350;
 
 const smoothstep = (x) => {
@@ -730,7 +736,7 @@ function buildShuffle({
     // from the far foundation gets more time than one beside the deck, so no card crosses the
     // stage faster than the frame budget allows.
     const distance = Math.hypot(deckX - ox, deckY - oy);
-    const gather = clamp(distance * SHUFFLE_GATHER_RATE, SHUFFLE_GATHER_MIN_MS, SHUFFLE_GATHER_MAX_MS);
+    const gather = Math.max(SHUFFLE_GATHER_MIN_MS, distance * SHUFFLE_GATHER_RATE);
     const launch = index * SHUFFLE_STAGGER_MS;
     return {
       id: card.id || card.suit + card.rank,
@@ -764,8 +770,10 @@ function buildShuffle({
   // Down, through the home-indicator strip in the layout viewport, and fully past the bottom
   // corner: every card is gone before the canvas hands over to the win card.
   const offY = height + half;
-  const lowestDeckY = items.reduce((low, item) => Math.min(low, item.deckY), offY);
-  const exitDur = Math.max(SHUFFLE_EXIT_MIN_MS, (offY - lowestDeckY) / SHUFFLE_EXIT_SPEED);
+  // The top-most card in the lattice is the one with the furthest to travel to get off the
+  // bottom, so it sets the exit length.
+  const topDeckY = items.reduce((top, item) => Math.min(top, item.deckY), offY);
+  const exitDur = Math.max(SHUFFLE_EXIT_MIN_MS, (offY - topDeckY) / SHUFFLE_EXIT_SPEED);
   // Every card starts leaving together, so the deck stays one object on the way out. The
   // absolute time is what the sampler and the tests use to tell "on the stage" from "gone".
   items.forEach((item) => { item.exit = exitStart; });
