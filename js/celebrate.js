@@ -1,5 +1,7 @@
-// Win celebration: one pass of the classic "bouncing cards" cascade, drawn on a full-screen
-// canvas. Cards leave trails because the canvas is intentionally not cleared between frames.
+// Win celebrations. One 2D canvas renderer draws whichever path the choreography module
+// built; the card dancer is a separate WebGL renderer. The dispatcher at the bottom chooses
+// between them, owns the one tap-to-skip handler, and hands the win card its cue.
+//
 // The sequence itself comes from the pure choreography module; this file only draws and fades.
 import { SUIT_SYMBOLS, rankLabel, isRed } from './game.js';
 import { computeCelebrationGeometry } from './celebration-geometry.js';
@@ -127,7 +129,7 @@ function beginFade(ms) {
   session.fadeTimer = setTimeout(() => teardown(true), ms + 60);
 }
 
-export function startWaterfall(canvas, {
+function startCanvasCelebration(canvas, {
   cw, ch, piles = [], cards = [], seed = 1, variant = 'waterfall', launchMs,
 } = {}) {
   stopCelebration();
@@ -141,6 +143,10 @@ export function startWaterfall(canvas, {
   let cardW = cw;
   let cardH = ch;
   let sprites = new Map();
+
+  // Only the waterfall leaves trails: its trails are the animation. The vortex is a spiral of
+  // distinct cards, so it clears its frame first or the funnel smears into a disc.
+  const trails = variant === 'waterfall';
 
   const allCards = cards.length ? cards : piles.flatMap((p) => p.cards || []);
   const cardById = new Map(allCards.map((c) => [c.id || c.suit + c.rank, c]));
@@ -221,6 +227,7 @@ export function startWaterfall(canvas, {
       beginFade(FADE_MS);
       return;
     }
+    if (!trails) clearCanvas(session.canvas);
     for (const card of sampleSequence(sequence, t)) {
       if (card.alpha <= 0) continue;
       const sprite = spriteFor(card.id);
@@ -290,20 +297,28 @@ function hasWebGL() {
   }
 }
 
-// The only entry point app.js uses. The dancer owns the screen when WebGL works; the
-// waterfall is the fallback when it does not. Both report completion so the win card can
-// follow, and both are skipped by the one handler above.
+// The rotation, in the order wins play them. Deliberately here rather than in the
+// choreography module: this is a list of *renderers*, and the dispatcher is the only thing
+// that knows about more than one. The order alternates a 2D pass with the 3D dancer, so two
+// wins in a row never show the same trick twice; vortex leads, so the newest one is met soon.
+export const CELEBRATIONS = ['vortex', 'dancer', 'waterfall'];
+
+// The only entry point app.js uses. It picks the renderer for the variant it is handed, and
+// every renderer reports completion so the win card can follow. Tap-to-skip is handled once,
+// above, for all of them.
 //
-// The two failures are handled differently on purpose. A browser without WebGL is a device
-// condition we expect, so the waterfall simply takes over and the player still gets a
-// celebration. A browser that has WebGL and still throws while building the dancer is our
-// own bug: it is reported to the console, and the waterfall still plays, because a won game
-// must reach its win card whatever we got wrong in the decoration.
+// The two dancer failures are handled differently on purpose. A browser without WebGL is a
+// device condition we expect, so the waterfall simply takes over and the player still gets a
+// celebration — but only for the dancer's turn in the rotation; the 2D variants are not
+// affected. A browser that has WebGL and still throws while building the dancer is our own
+// bug: it is reported to the console, and the waterfall still plays, because a won game must
+// reach its win card whatever we got wrong in the decoration.
 export function startCelebration(canvas, options = {}) {
   stopCelebration();
+  const variant = CELEBRATIONS.includes(options.variant) ? options.variant : CELEBRATIONS[0];
 
   let renderer = null;
-  if (hasWebGL()) {
+  if (variant === 'dancer' && hasWebGL()) {
     try {
       renderer = startDancer();
     } catch (err) {
@@ -311,7 +326,12 @@ export function startCelebration(canvas, options = {}) {
       renderer = null;
     }
   }
-  if (!renderer) renderer = startWaterfall(canvas, options);
+  if (!renderer) {
+    renderer = startCanvasCelebration(canvas, {
+      ...options,
+      variant: variant === 'dancer' ? 'waterfall' : variant,
+    });
+  }
 
   const entry = {
     finished: renderer.finished,
