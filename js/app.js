@@ -3,7 +3,12 @@ import {
   autoCompleteStep, isValidState, isRed, rankLabel, SUIT_SYMBOLS, createDeck,
   encodeState, pushUndo, popUndo,
 } from './game.js';
-import { startCelebration, stopCelebration } from './celebrate.js';
+import { startCelebration, stopCelebration, availableCelebrations } from './celebrate.js';
+import { resolveIndex, nextVariant } from './celebration-rotation.js';
+
+// The winning line-up for this device, decided once: a phone without WebGL should not offer
+// a slot to an animation it cannot play. See availableCelebrations.
+const celebrations = availableCelebrations();
 
 const STATE_KEY = 'solitaire.game';
 const SETTINGS_KEY = 'solitaire.settings';
@@ -29,7 +34,14 @@ function saveJSON(key, value) {
 }
 function loadSettings() {
   const s = loadJSON(SETTINGS_KEY) || {};
-  return { hand: s.hand === 'left' ? 'left' : 'right', drawCount: s.drawCount === 3 ? 3 : 1 };
+  return {
+    hand: s.hand === 'left' ? 'left' : 'right',
+    drawCount: s.drawCount === 3 ? 3 : 1,
+    // The index of the celebration that plays *next*, so a reload or a new deal resumes the
+    // rotation instead of repeating it. It lives in settings, not in the saved game, so
+    // dealing a new hand cannot reset it.
+    celebration: s.celebration ?? 0,
+  };
 }
 const saveSettings = () => saveJSON(SETTINGS_KEY, settings);
 // The undo history is saved in the same entry as the game so the two can never get out of step.
@@ -294,6 +306,16 @@ async function runAutoComplete() {
   if (state.won) onWin();
 }
 
+// Take the celebration for this win from the rotation and remember the one after it. This
+// only runs when a celebration is about to start, so a reduced-motion win and a reload of an
+// already-won game do not burn a slot in the rotation that the player never saw.
+function takeCelebration() {
+  const index = resolveIndex(settings.celebration, celebrations.length);
+  settings.celebration = nextVariant(index, celebrations.length);
+  saveSettings();
+  return celebrations[index];
+}
+
 async function onWin({ celebrate = true } = {}) {
   const run = ++winRun;
   if (celebrate) await sleep(400);
@@ -301,6 +323,7 @@ async function onWin({ celebrate = true } = {}) {
   if (celebrate && !reducedMotion) {
     const rect = board.getBoundingClientRect();
     const celebration = startCelebration(canvas, {
+      variant: takeCelebration(),
       cw: layout.cw,
       ch: layout.ch,
       cards: state.foundations.flat(),

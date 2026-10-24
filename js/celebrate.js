@@ -88,8 +88,9 @@ function makeSprite(card, cw, ch, dpr) {
   return c;
 }
 
-function clearCanvas(canvas) {
-  const ctx = canvas.getContext('2d');
+// Takes the context rather than looking it up: this runs on every frame of a variant that
+// clears, and getContext is not free on a phone.
+function clearCanvas(canvas, ctx) {
   ctx.save();
   ctx.setTransform(1, 0, 0, 1, 0, 0);
   ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -106,7 +107,7 @@ function teardown(completed) {
   raf = 0;
   clearTimeout(current.fadeTimer);
   if (removeListeners) { removeListeners(); removeListeners = null; }
-  clearCanvas(current.canvas);
+  clearCanvas(current.canvas, current.canvas.getContext('2d'));
   current.canvas.hidden = true;
   current.canvas.style.transition = '';
   current.canvas.style.opacity = '';
@@ -227,7 +228,7 @@ function startCanvasCelebration(canvas, {
       beginFade(FADE_MS);
       return;
     }
-    if (!trails) clearCanvas(session.canvas);
+    if (!trails) clearCanvas(session.canvas, ctx);
     for (const card of sampleSequence(sequence, t)) {
       if (card.alpha <= 0) continue;
       const sprite = spriteFor(card.id);
@@ -299,9 +300,18 @@ function hasWebGL() {
 
 // The rotation, in the order wins play them. Deliberately here rather than in the
 // choreography module: this is a list of *renderers*, and the dispatcher is the only thing
-// that knows about more than one. The order alternates a 2D pass with the 3D dancer, so two
-// wins in a row never show the same trick twice; vortex leads, so the newest one is met soon.
+// that knows about more than one (the dancer has no choreography module of its own). The
+// order alternates a 2D pass with the 3D dancer, so two wins in a row never show the same
+// trick twice; vortex leads, so the newest one is met soon.
 export const CELEBRATIONS = ['vortex', 'dancer', 'waterfall'];
+
+// The list to rotate through on this device. A browser without WebGL cannot play the dancer,
+// and its fallback is the waterfall — so leaving it in the rotation would play the waterfall
+// twice in a row, which is the one thing the rotation exists to prevent. Dropping it keeps
+// every consecutive pair different, and the dance simply does not exist on that device.
+export function availableCelebrations() {
+  return CELEBRATIONS.filter((variant) => variant !== 'dancer' || hasWebGL());
+}
 
 // The only entry point app.js uses. It picks the renderer for the variant it is handed, and
 // every renderer reports completion so the win card can follow. Tap-to-skip is handled once,
