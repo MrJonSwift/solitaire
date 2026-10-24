@@ -332,21 +332,23 @@ const CONGA_RADIUS = 0.4;         // corner radius of the circuit, of its short 
 // The circuit is a rounded rectangle: the longest closed loop that stays on a stage, which
 // is what keeps 52 cards from bunching into a band on a 320px phone. The bounds are built
 // from the card's rotated extent, so the tip and the bob can never push a corner off an
-// edge, and from the floor the other paths rest on, so no card hangs over the home indicator.
-function makeCongaLoop(width, height, bottom, cardWidth, cardHeight, tip, bob) {
+// edge; from the floor the other paths rest on, so no card hangs over the home indicator;
+// and from the top safe area, so the queue never runs under the notch or the status bar.
+function makeCongaLoop(width, top, bottom, cardWidth, cardHeight, tip, bob) {
   const cos = Math.abs(Math.cos(tip));
   const sin = Math.abs(Math.sin(tip));
   const ex = (cos * cardWidth + sin * cardHeight) / 2 + 4;
   const ey = (sin * cardWidth + cos * cardHeight) / 2 + 4 + bob;
   const halfW = Math.max(1, width / 2 - ex);
-  const halfH = Math.max(1, (bottom - 2 * ey) / 2);
+  const topEdge = Math.max(0, finite(top)) + ey;
+  const halfH = Math.max(1, (bottom - topEdge - ey) / 2);
   const r = Math.max(0, Math.min(halfW, halfH) * CONGA_RADIUS);
   const sx = 2 * (halfW - r); // length of one horizontal straight
   const sy = 2 * (halfH - r); // length of one vertical straight
   const arc = (Math.PI * r) / 2;
   return {
     cx: width / 2,
-    cy: ey + halfH,
+    cy: topEdge + halfH,
     halfW,
     halfH,
     r,
@@ -418,10 +420,14 @@ function buildConga({
   const floorY = Number.isFinite(viewport.floorY)
     ? clamp(viewport.floorY, 0, height)
     : Math.max(0, height - bottomInset - cardHeight);
+  // The top of the stage is the safe-area inset where the caller knows it, and otherwise
+  // the canvas's own offset from the top of the page. Both are clamped: a path sampled from
+  // a bad viewport must still land inside the canvas.
+  const topInset = Math.max(0, finite(viewport.topInset, finite(viewport.top)));
   const rng = seededRandom(seed);
   const ordered = launchOrder(cards, piles);
   const bob = cardHeight * CONGA_BOB;
-  const loop = makeCongaLoop(width, height, floorY + cardHeight, cardWidth, cardHeight, CONGA_TIP, bob);
+  const loop = makeCongaLoop(width, topInset, floorY + cardHeight, cardWidth, cardHeight, CONGA_TIP, bob);
   // Spacing answers to both the card and the circuit: tight enough to fit every card with
   // a gap left over, loose enough that neighbours overlap only partly and the faces read.
   const count = Math.max(1, ordered.length);
@@ -454,7 +460,13 @@ function buildConga({
     // Same small scatter as the vortex, and clamped for the same reason: a tablet's
     // foundations sit close to the edge, and a card may not start half off the stage.
     const ox = clamp(finite(origin.x) - left + (rng() - 0.5) * cardWidth * 0.3, 0, Math.max(0, width - cardWidth));
-    const oy = clamp(finite(origin.y) - top + (rng() - 0.5) * cardHeight * 0.3, 0, Math.max(0, height - cardHeight));
+    // The scatter must not drop a card into the notch either: the inset the ring respects
+    // is the ceiling for a card at its foundation, as the stage bottom is the floor.
+    const oy = clamp(
+      finite(origin.y) - top + (rng() - 0.5) * cardHeight * 0.3,
+      Math.min(topInset, height - cardHeight),
+      Math.max(0, height - cardHeight),
+    );
     const launch = index * CONGA_STAGGER_MS;
     const offset = index * spacing;
     const entry = entryFor(ox, oy, launch, offset);
@@ -507,21 +519,31 @@ function buildConga({
     return { door, ux, uy, burst };
   };
 
-  let exit = exitAt(natural);
-  let firstExit = natural;
-  for (let pass = 0; pass < 3; pass++) {
-    const total = firstExit + train + exit.burst;
-    const wanted = clamp(total, CONGA_MIN_MS, CONGA_MAX_MS);
-    firstExit = Math.max(floor, natural + (wanted - total));
-    exit = exitAt(firstExit);
+  // One allowance for the whole ending: the longest any card can take to fly off from
+  // anywhere on the ring. The burst depends on where the gap sits, so a length that tracked
+  // the gap exactly would be a reflection — move the drain, the door moves, the length moves
+  // back — and would only land in the band by parity. A single bound makes the length exact
+  // in one pass; the price is at most a fraction of a second of empty stage at the very end,
+  // which the canvas fade and the win card already cover.
+  let exitAllowance = CONGA_EXIT_MIN_MS;
+  for (let i = 0; i < 24; i++) {
+    exitAllowance = Math.max(exitAllowance, exitAt((i / 24) * (loop.length / speed)).burst);
   }
+  const wanted = clamp(natural + train + exitAllowance, CONGA_MIN_MS, CONGA_MAX_MS);
+  // Never before the first landing has happened; that is the one thing the deadline cannot
+  // buy. Otherwise the length lands on `wanted` exactly.
+  const firstExit = Math.max(floor, wanted - train - exitAllowance);
+  const exit = exitAt(firstExit);
 
   items.forEach((item, index) => {
     item.exit = firstExit + index * exitStep;
     item.flight = item.exit + exit.burst;
   });
 
-  const duration = items.length ? Math.max(...items.map((item) => item.flight)) : 0;
+  // The allowance is what the length is planned on; the cards themselves fly for the burst
+  // their shared door actually needs, so every one of them is gone by this time. Ceil, not
+  // round: the last card must never be in the air at the instant the sequence ends.
+  const duration = items.length ? Math.ceil(firstExit + train + exitAllowance) : 0;
   return {
     variant: 'conga',
     duration,
@@ -588,6 +610,13 @@ function congaSway(geometry, distance, now) {
 
 // ---------- The seam ----------
 
+// One sampler per path: a new path is a line here rather than another branch in the loop.
+const SAMPLERS = {
+  waterfall: (item, tau) => sampleWaterfall(item, tau),
+  vortex: (item, tau, geometry) => sampleVortex(item, geometry, tau),
+  conga: (item, tau, geometry) => sampleConga(item, geometry, tau),
+};
+
 export function buildWinSequence(options = {}) {
   // An unknown name is a coding mistake, not a reason to leave a win uncelebrated: the
   // waterfall is the fallback everywhere else, so it is the fallback here too.
@@ -599,13 +628,10 @@ export function buildWinSequence(options = {}) {
 export function sampleSequence(sequence, t) {
   if (!sequence || !Array.isArray(sequence.items)) return [];
   const time = clamp(finite(t), 0, finite(sequence.duration));
-  const conga = sequence.variant === 'conga' ? sequence.geometry : null;
-  const vortex = sequence.variant === 'vortex' ? sequence.geometry : null;
+  const sampler = SAMPLERS[sequence.variant] || SAMPLERS.waterfall;
   return sequence.items.map((item) => {
     const tau = time - item.launch;
-    const point = conga
-      ? sampleConga(item, conga, tau)
-      : vortex ? sampleVortex(item, vortex, tau) : sampleWaterfall(item, tau);
+    const point = sampler(item, tau, sequence.geometry);
     return {
       id: item.id,
       x: point.x,

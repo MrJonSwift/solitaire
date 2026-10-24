@@ -179,6 +179,7 @@ function startCanvasCelebration(canvas, {
       floorY: geometry.floorY,
       left: geometry.left,
       top: geometry.top,
+      topInset: geometry.topInset,
     },
   });
 

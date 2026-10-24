@@ -30,6 +30,20 @@ test('iPhone insets: the resting card clears the home indicator', () => {
   assert.equal(g.floorY + g.cardHeight, 852 - 34);
 });
 
+test('the top inset is reported, so a path can stay clear of the notch', () => {
+  // The floor already answers to the bottom inset; the top is reported rather than folded
+  // away, because a celebration that flies near the top edge has to know where the notch is.
+  const g = computeCelebrationGeometry({
+    rect: { left: 0, top: 0, width: 393, height: 852 },
+    insets: insets(59, 34),
+    dpr: 3,
+    cardWidth: 48,
+    cardHeight: 67,
+  });
+  assert.equal(g.topInset, 59);
+  assert.equal(computeCelebrationGeometry({ insets: insets(-5, 0) }).topInset, 0);
+});
+
 test('rect smaller than the window (iOS toolbars): geometry follows the rect', () => {
   // The canvas box was measured at 393x700 while the window reports 852 tall, the
   // Safari-with-toolbars case. The floor must follow the measured rect, not the window.
