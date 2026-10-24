@@ -145,8 +145,9 @@ function startCanvasCelebration(canvas, {
   let cardH = ch;
   let sprites = new Map();
 
-  // Only the waterfall leaves trails: its trails are the animation. The vortex is a spiral of
-  // distinct cards, so it clears its frame first or the funnel smears into a disc.
+  // Only the waterfall leaves trails: its trails are the animation. The vortex and the
+  // conga are rings of distinct cards, so they clear their frame first or the shapes smear
+  // into a disc or a band.
   const trails = variant === 'waterfall';
 
   const allCards = cards.length ? cards : piles.flatMap((p) => p.cards || []);
@@ -178,6 +179,7 @@ function startCanvasCelebration(canvas, {
       floorY: geometry.floorY,
       left: geometry.left,
       top: geometry.top,
+      topInset: geometry.topInset,
     },
   });
 
@@ -302,8 +304,8 @@ function hasWebGL() {
 // choreography module: this is a list of *renderers*, and the dispatcher is the only thing
 // that knows about more than one (the dancer has no choreography module of its own). The
 // order alternates a 2D pass with the 3D dancer, so two wins in a row never show the same
-// trick twice; vortex leads, so the newest one is met soon.
-export const CELEBRATIONS = ['vortex', 'dancer', 'waterfall'];
+// trick twice; conga leads, so the newest one is met soon.
+export const CELEBRATIONS = ['conga', 'vortex', 'dancer', 'waterfall'];
 
 // The list to rotate through on this device. A browser without WebGL cannot play the dancer,
 // and its fallback is the waterfall — so leaving it in the rotation would play the waterfall

@@ -8,9 +8,11 @@ export function computeCelebrationGeometry({ rect = {}, insets = {}, dpr = 1, ca
   const requestedDpr = finite(dpr, 1);
   const ratio = requestedDpr > 0 ? requestedDpr : 1;
   const width = Math.max(0, finite(box.width));  const height = Math.max(0, finite(box.height));
-  // Only the bottom inset moves the floor. Top/right/left are accepted because the call
+  // The bottom inset moves the floor; the top inset is reported so a path that flies near
+  // the top edge can stay clear of the notch. Right and left are accepted because the call
   // site passes the full safe-area box, but the stage itself stays full-bleed.
   const bottom = Math.max(0, finite(safe.bottom));
+  const topInset = Math.max(0, finite(safe.top));
   const cw = Math.max(0, finite(cardWidth));
   const ch = Math.max(0, finite(cardHeight));
 
@@ -26,6 +28,7 @@ export function computeCelebrationGeometry({ rect = {}, insets = {}, dpr = 1, ca
     pixelHeight: Math.round(height * ratio),
     left: finite(box.left),
     top: finite(box.top),
+    topInset,
     floorY,
     cardWidth: cw,
     cardHeight: ch,

@@ -128,17 +128,24 @@ test('a fixed seed is repeatable and sampling does not depend on call order', ()
 const vortex = (seed = 7) => build(seed, 'vortex');
 
 // A spinning card's corners define what the player actually sees, so every bound here is
-// measured from the rotated rectangle, not from the card's unrotated edges.
-const bottom = viewport.floorY + ch; // where a card at rest puts its bottom edge
-const inside = (card) => {
+// measured from the rotated rectangle, not from the card's unrotated edges. The default is
+// the phone stage; a sweep or a safe-area test passes its own bounds.
+const phoneStage = {
+  width: viewport.width,
+  top: 0,
+  bottom: viewport.floorY + ch, // where a card at rest puts its bottom edge
+  cw,
+  ch,
+};
+const inside = (card, stage = phoneStage) => {
   const cos = Math.abs(Math.cos(card.rotation));
   const sin = Math.abs(Math.sin(card.rotation));
-  const ex = (cos * cw + sin * ch) / 2;
-  const ey = (sin * cw + cos * ch) / 2;
-  const cx = card.x + cw / 2;
-  const cy = card.y + ch / 2;
-  return cx - ex >= -0.6 && cx + ex <= viewport.width + 0.6
-    && cy - ey >= -0.6 && cy + ey <= bottom + 0.6;
+  const ex = (cos * stage.cw + sin * stage.ch) / 2;
+  const ey = (sin * stage.cw + cos * stage.ch) / 2;
+  const cx = card.x + stage.cw / 2;
+  const cy = card.y + stage.ch / 2;
+  return cx - ex >= -0.6 && cx + ex <= stage.width + 0.6
+    && cy - ey >= stage.top - 0.6 && cy + ey <= stage.bottom + 0.6;
 };
 
 test('the vortex uses all 52 cards exactly once, and says so', () => {
@@ -259,6 +266,199 @@ test('a vortex seed is repeatable and a different seed is a different pass', () 
   assert.deepEqual(a.items, b.items);
   assert.deepEqual(sampleSequence(a, 1234), sampleSequence(b, 1234));
   assert.notDeepEqual(vortex(12).items, a.items);
+});
+
+// ---------- Conga ----------
+const conga = (seed = 7) => build(seed, 'conga');
+
+test('the conga uses all 52 cards exactly once, and says so', () => {
+  const sequence = conga();
+  assert.equal(sequence.variant, 'conga');
+  assert.equal(sequence.items.length, 52);
+  assert.equal(new Set(sequence.items.map((item) => item.id)).size, 52);
+});
+
+test('a conga pass lasts between six and eight seconds', () => {
+  const { duration } = conga();
+  assert.ok(duration >= 6000, `duration ${duration}ms is shorter than 6s`);
+  assert.ok(duration <= 8000, `duration ${duration}ms is longer than 8s`);
+});
+
+test('every conga card starts on the stage', () => {
+  const sequence = conga();
+  for (const item of sequence.items) {
+    const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+    assert.ok(card.alpha > 0, `${item.id} is invisible at its launch`);
+    assert.ok(inside(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+  }
+});
+
+test('the conga chain stays on the stage and never returns a NaN', () => {
+  const sequence = conga();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const cards = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    assert.equal(cards.size, 52, `sample at ${t}ms lost cards`);
+    for (const item of sequence.items) {
+      const card = cards.get(item.id);
+      assert.ok(Number.isFinite(card.x), `${card.id} x is not finite at ${t}ms`);
+      assert.ok(Number.isFinite(card.y), `${card.id} y is not finite at ${t}ms`);
+      const tau = t - item.launch;
+      // Not launched yet, or already flying out through the gap on purpose. Everything on
+      // the ring itself is inside the stage: that is the whole geometry promise.
+      // item.exit is an absolute time, not a per-card duration: a card that has reached
+      // the gap is flying off the stage on purpose.
+      if (tau <= 0 || t >= item.exit) continue;
+      assert.ok(inside(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
+    }
+  }
+});
+
+test('the conga ends on an empty board', () => {
+  const sequence = conga();
+  const cards = sampleSequence(sequence, sequence.duration);
+  assert.equal(cards.length, 52);
+  for (const card of cards) {
+    // Every card is already off the stage when the sequence ends, so the win card opens
+    // on an empty board. No card is left for the canvas fade to take out.
+    assert.equal(card.alpha, 0, `${card.id} is still on the board at the end`);
+  }
+});
+
+test('a conga seed is repeatable, and a different seed is a different pass', () => {
+  // The seed scatters where each card leaves its foundation, which sizes its spring, so
+  // unlike the geometry it is not decoration: the same win must look the same twice.
+  const a = conga(11);
+  const b = conga(11);
+  assert.deepEqual(a.items, b.items);
+  assert.deepEqual(sampleSequence(a, 1234), sampleSequence(b, 1234));
+  assert.notDeepEqual(conga(12).items, a.items);
+});
+
+test('conga alphas are on or off and the tip never over-rotates', () => {
+  const sequence = conga();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    for (const card of sampleSequence(sequence, t)) {
+      assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
+      assert.ok(Number.isFinite(card.rotation), `${card.id} rotation is not finite at ${t}ms`);
+      assert.ok(Math.abs(card.rotation) <= 0.2 + 1e-9, `${card.id} tips ${card.rotation}rad at ${t}ms`);
+    }
+  }
+});
+
+test('the conga frames itself from a 320px phone to a landscape iPad, without a jump', () => {
+  // The circuit is sized from the stage and the card, so every size needs to be swept: a
+  // ring that fits an iPhone can still be cropped on a tablet, and the per-frame step is
+  // measured against the same 16px the other paths are held to.
+  const stages = [
+    { name: 'smallest phone', width: 320, height: 568, cw: 42, ch: 59 },
+    { name: 'phone', width: 393, height: 852, cw: 48, ch: 67 },
+    { name: 'iPad', width: 1024, height: 768, cw: 105, ch: 147 },
+    { name: 'iPad Pro landscape', width: 1366, height: 1024, cw: 130, ch: 182 },
+  ];
+  for (const stage of stages) {
+    const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+    const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+      x: 12 + i * (stage.cw + 6),
+      y: 8, // the foundation row, near the top of the stage
+      cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+    }));
+    const view = {
+      width: stage.width,
+      height: stage.height,
+      left: 0,
+      top: 0,
+      floorY: stage.height - 34 - stage.ch,
+    };
+    const sequence = buildWinSequence({
+      variant: 'conga', cards, piles, cw: stage.cw, ch: stage.ch, viewport: view, seed: 9,
+    });
+    const bounds = {
+      width: stage.width,
+      top: 0,
+      bottom: view.floorY + stage.ch,
+      cw: stage.cw,
+      ch: stage.ch,
+    };
+
+    for (const item of sequence.items) {
+      const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+      assert.ok(card.alpha > 0 && inside(card, bounds),
+        `${stage.name}: ${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+    }
+
+    for (let t = 0; t <= sequence.duration; t += 25) {
+      const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const item of sequence.items) {
+        const tau = t - item.launch;
+        if (tau <= 0 || t >= item.exit) continue;
+        const card = byId.get(item.id);
+        assert.ok(inside(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
+      }
+    }
+
+    const frame = 16;
+    for (let t = 0; t + frame <= sequence.duration; t += 50) {
+      const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const card of sampleSequence(sequence, t + frame)) {
+        const previous = before.get(card.id);
+        if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+        assert.ok(moved <= 16, `${stage.name}: ${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+      }
+    }
+
+    assert.equal(sampleSequence(sequence, sequence.duration).filter((c) => c.alpha > 0).length, 0,
+      `${stage.name}: the board is not empty at the end`);
+    assert.ok(sequence.duration >= 6200, `${stage.name}: duration ${sequence.duration}ms is under 6.2s`);
+    assert.ok(sequence.duration <= 8000, `${stage.name}: duration ${sequence.duration}ms is over 8s`);
+  }
+});
+
+test('the conga stays under the notch, not just above the home indicator', () => {
+  // The top straight is built from the top safe area the way the bottom is built from the
+  // floor: no card's rotated extent may cross it, or the queue runs under the Dynamic
+  // Island. The foundations here sit below the notch, as they do inside the app's padding.
+  const notch = 59;
+  const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+  const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+    x: 12 + i * (cw + 6),
+    y: notch + 8,
+    cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+  }));
+  const view = { ...viewport, top: 0, topInset: notch };
+  const sequence = buildWinSequence({
+    variant: 'conga', cards, piles, cw, ch, viewport: view, seed: 4,
+  });
+  const bounds = { ...phoneStage, top: notch };
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const item of sequence.items) {
+      const tau = t - item.launch;
+      if (tau <= 0 || t >= item.exit) continue;
+      const card = byId.get(item.id);
+      assert.ok(inside(card, bounds),
+        `${item.id} crosses the notch at ${t}ms (y=${card.y.toFixed(1)})`);
+    }
+  }
+});
+
+test('the conga length lands in its band at both ends of the stage sweep', () => {
+  // A stage too small to fill the window is stretched to the short end; one too large to
+  // drain in time is cut to the long end. Both ends are the promise of the ticket.
+  const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+  const lengths = (width, height, cw, ch) => {
+    const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+      x: 12 + i * (cw + 6),
+      y: 8,
+      cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+    }));
+    const view = { width, height, left: 0, top: 0, floorY: height - 34 - ch };
+    return buildWinSequence({ variant: 'conga', cards, piles, cw, ch, viewport: view, seed: 2 }).duration;
+  };
+  const short = lengths(320, 240, 30, 42);
+  assert.ok(short >= 6200 && short <= 6201, `short stage lasted ${short}ms, not the 6.2s floor`);
+  const long = lengths(1600, 1400, 200, 280);
+  assert.ok(long >= 7999 && long <= 8000, `huge stage lasted ${long}ms, not the 8s ceiling`);
 });
 
 test('the vortex frames itself on a tablet as well as on a phone', () => {
