@@ -1,9 +1,11 @@
 // Pure choreography for win celebrations. Builds one sequence from card and viewport data,
 // then samples it at a time. No DOM, no canvas, no timers: Node can prove the shape of a win.
 //
-// Two paths live here and share the seam. `waterfall` is the shipped cascade, which leaves
-// trails and lets every card fall off the sides. `vortex` is the second celebration: the four
-// foundations unwind into one funnel and burst. The renderer draws whichever it is handed.
+// Four 2D paths live here and share the seam. `waterfall` is the shipped cascade, which
+// leaves trails and lets every card fall off the sides. `vortex` unwinds the four foundations
+// into one funnel and bursts. `conga` turns the cards into a queue that files round the stage
+// and off through a gap. `shuffle` tidies them into a deck, riffles it, squares it up and
+// slides it away. The renderer draws whichever it is handed.
 import { seededRandom } from './game.js';
 
 // The one taste knob for density. 52 cards at 120ms is a 6.12s launch window.
@@ -608,6 +610,255 @@ function congaSway(geometry, distance, now) {
   return geometry.tip * Math.sin(TAU * (s * geometry.tipWaves - now / CONGA_TIP_PERIOD_MS));
 }
 
+// ---------- Shuffle ----------
+// The quiet ending among the loud ones. Not a scatter: the 52 cards tidy themselves away.
+// Three beats the eye can name at phone size: gather (every card flies to one neat deck in
+// the middle of the stage), riffle (the deck splits into two packets that lift, tilt opposite
+// ways and cross into each other), snap (the packets square up, the deck hops once and slides
+// off the bottom). The stage is empty when the pass ends.
+//
+// The deck is a tight 7x8 lattice rather than 52 cards at one pixel: the drawn edges are what
+// make it read as a deck with thickness, and the same lattice is where the halves squaring up
+// land, so no card has to jump. The riffle fans each half along its own tilt, so the packet is
+// a short stack of visible edges, not a single card. Two packets of those, crossing, is the
+// whole trick: at 320px the eye sees a handful of interleaved edges, which is a shuffle.
+const SHUFFLE_STAGGER_MS = 14;        // one card leaves its foundation every 14ms
+const SHUFFLE_GATHER_RATE = 1.9;      // ms of flight per px of gap. Smoothstep peaks at 1.5x
+                                      // the average speed, so the far cards still step under
+                                      // 16px a frame on a tablet.
+const SHUFFLE_GATHER_MIN_MS = 500;
+const SHUFFLE_GATHER_MAX_MS = 2600;
+const SHUFFLE_HOLD_MS = 200;          // the finished deck rests for a beat before the split
+const SHUFFLE_MIN_RIFFLE_MS = 2000;   // the earliest the riffle may start. On a phone the deck
+                                      // is complete well before this; on a big stage the wait
+                                      // for the last card pushes it later.
+const SHUFFLE_SPLIT_MS = 700;         // halves separate and lift
+const SHUFFLE_APPROACH_MS = 650;      // halves slide into each other
+const SHUFFLE_SQUARE_MS = 900;        // packets resolve into the one deck
+const SHUFFLE_SQUARE_SKEW_MS = 150;   // spread of the square-up start times, so the cards
+                                      // cascade in instead of the deck switching in one frame
+const SHUFFLE_BOUNCE_MS = 800;        // one hop up and down after the deck is square
+const SHUFFLE_BOUNCE_AMP = 0.4;       // hop height, as a fraction of card height
+const SHUFFLE_SNAP_HOLD_MS = 450;     // the squared deck sits before it leaves
+const SHUFFLE_TILT = 0.3;             // radians of packet tilt, about 17 degrees
+const SHUFFLE_APPROACH_TILT = 0.45;   // how much of the tilt is left when the halves meet
+const SHUFFLE_SPLIT_SEP = 0.8;        // half separation at full split, of card width
+const SHUFFLE_APPROACH_SEP = 0.15;    // half separation when they cross, of card width
+const SHUFFLE_LIFT = 0.35;            // packet lift, of card height
+const SHUFFLE_PACKET_STEP = 0.03;     // neighbour offset inside one half, of card width
+const SHUFFLE_DECK_GAP = 0.05;        // lattice spacing, of card width
+const SHUFFLE_DECK_COLS = 7;
+const SHUFFLE_EXIT_SPEED = 0.8;       // px per ms, straight down and off the bottom
+const SHUFFLE_EXIT_MIN_MS = 350;
+
+const smoothstep = (x) => {
+  const u = clamp(x, 0, 1);
+  return u * u * (3 - 2 * u);
+};
+
+// The end of approach is where the square-up begins. Derived here once, so the sampler reads
+// the same three constants the build does and the geometry needs no extra field.
+const shuffleSquareStart = (geometry) =>
+  geometry.riffleStart + SHUFFLE_SPLIT_MS + SHUFFLE_APPROACH_MS;
+
+function buildShuffle({
+  cards = [],
+  piles = [],
+  cw = 0,
+  ch = 0,
+  viewport = {},
+  seed = 1,
+} = {}) {
+  const width = Math.max(0, finite(viewport.width));
+  const height = Math.max(0, finite(viewport.height));
+  const cardWidth = Math.max(0, finite(cw));
+  const cardHeight = Math.max(0, finite(ch));
+  const left = finite(viewport.left);
+  const top = finite(viewport.top);
+  const bottomInset = Math.max(0, finite(viewport.bottomInset));
+  const floorY = Number.isFinite(viewport.floorY)
+    ? clamp(viewport.floorY, 0, height)
+    : Math.max(0, height - bottomInset - cardHeight);
+  const topInset = Math.max(0, finite(viewport.topInset, finite(viewport.top)));
+  const rng = seededRandom(seed);
+  const ordered = launchOrder(cards, piles);
+
+  // The deck sits in the middle of the part of the stage that is not safe-area. Its lattice
+  // is small, so this is also the gather point: every bound is a card-and-a-half either way,
+  // far inside the edges even at 320px.
+  const deckCx = width / 2;
+  const deckCy = topInset + Math.max(1, floorY + cardHeight - topInset) / 2;
+  const half = Math.hypot(cardWidth, cardHeight) / 2;
+  const gap = Math.max(0.5, cardWidth * SHUFFLE_DECK_GAP);
+  const step = Math.max(0.5, cardWidth * SHUFFLE_PACKET_STEP);
+  const rows = Math.max(1, Math.ceil(ordered.length / SHUFFLE_DECK_COLS));
+  const count = Math.max(1, ordered.length);
+  const halfCount = Math.ceil(count / 2);
+  const tiltCos = Math.cos(SHUFFLE_TILT);
+  const tiltSin = Math.sin(SHUFFLE_TILT);
+
+  const items = ordered.map(({ card, pile }, index) => {
+    const origin = piles[pile] || {};
+    // Same clamped scatter as the other paths: a tablet's foundation row is close to the
+    // edge, and a card may not start half off the stage or under the notch.
+    const ox = clamp(finite(origin.x) - left + (rng() - 0.5) * cardWidth * 0.3, 0, Math.max(0, width - cardWidth));
+    const oy = clamp(
+      finite(origin.y) - top + (rng() - 0.5) * cardHeight * 0.3,
+      Math.min(topInset, height - cardHeight),
+      Math.max(0, height - cardHeight),
+    );
+
+    // One slot in the square deck. Cards keep the deck's own order, so the lattice never
+    // changes and the square-up has a fixed target.
+    const col = index % SHUFFLE_DECK_COLS;
+    const row = Math.floor(index / SHUFFLE_DECK_COLS);
+    const deckX = deckCx - cardWidth / 2 + (col - (SHUFFLE_DECK_COLS - 1) / 2) * gap;
+    const deckY = deckCy - cardHeight / 2 + (row - (rows - 1) / 2) * gap;
+
+    // Even indices are the left half, odd the right. Each half is a short fan along its own
+    // tilt, so a packet reads as a fistful of card edges rather than one rectangle.
+    const sign = index % 2 === 0 ? -1 : 1;
+    const fan = (Math.floor(index / 2) - (halfCount - 1) / 2) * step;
+    const fanX = fan * tiltCos;
+    const fanY = sign * fan * tiltSin;
+    const splitX = deckCx + sign * cardWidth * SHUFFLE_SPLIT_SEP + fanX - cardWidth / 2;
+    const splitY = deckCy - cardHeight * SHUFFLE_LIFT + fanY - cardHeight / 2;
+    const approachX = deckCx + sign * cardWidth * SHUFFLE_APPROACH_SEP + fanX - cardWidth / 2;
+    const approachY = deckCy - cardHeight * SHUFFLE_LIFT * 0.75 + fanY - cardHeight / 2;
+
+    // The gather spring is sized from the distance it covers, like the conga's entry: a card
+    // from the far foundation gets more time than one beside the deck, so no card crosses the
+    // stage faster than the frame budget allows.
+    const distance = Math.hypot(deckX - ox, deckY - oy);
+    const gather = clamp(distance * SHUFFLE_GATHER_RATE, SHUFFLE_GATHER_MIN_MS, SHUFFLE_GATHER_MAX_MS);
+    const launch = index * SHUFFLE_STAGGER_MS;
+    return {
+      id: card.id || card.suit + card.rank,
+      suit: card.suit,
+      rank: card.rank,
+      pile,
+      launch,
+      gather,
+      gatherEnd: launch + gather,
+      squareDelay: ((index * 7) % count) / Math.max(1, count - 1) * SHUFFLE_SQUARE_SKEW_MS,
+      sign,
+      ox,
+      oy,
+      deckX,
+      deckY,
+      splitX,
+      splitY,
+      approachX,
+      approachY,
+    };
+  });
+
+  // The riffle waits for the slowest card to land, then every card keeps the same schedule:
+  // the beats are the deck's, not each card's. The floor keeps the shortest phone in the
+  // six-to-seven-second band.
+  const maxArrival = items.reduce((max, item) => Math.max(max, item.gatherEnd), 0);
+  const riffleStart = Math.max(SHUFFLE_MIN_RIFFLE_MS, Math.ceil(maxArrival + SHUFFLE_HOLD_MS));
+  const approachEnd = shuffleSquareStart({ riffleStart });
+  const bounceStart = approachEnd + SHUFFLE_SQUARE_MS + SHUFFLE_SQUARE_SKEW_MS;
+  const exitStart = bounceStart + SHUFFLE_BOUNCE_MS + SHUFFLE_SNAP_HOLD_MS;
+  // Down, through the home-indicator strip in the layout viewport, and fully past the bottom
+  // corner: every card is gone before the canvas hands over to the win card.
+  const offY = height + half;
+  const lowestDeckY = items.reduce((low, item) => Math.min(low, item.deckY), offY);
+  const exitDur = Math.max(SHUFFLE_EXIT_MIN_MS, (offY - lowestDeckY) / SHUFFLE_EXIT_SPEED);
+  // Every card starts leaving together, so the deck stays one object on the way out. The
+  // absolute time is what the sampler and the tests use to tell "on the stage" from "gone".
+  items.forEach((item) => { item.exit = exitStart; });
+  const duration = Math.ceil(exitStart + exitDur);
+
+  return {
+    variant: 'shuffle',
+    duration,
+    viewport: { width, height, floorY },
+    geometry: {
+      riffleStart,
+      bounceStart,
+      exitStart,
+      exitDur,
+      offY,
+      bounceAmp: cardHeight * SHUFFLE_BOUNCE_AMP,
+    },
+    items,
+  };
+}
+
+function sampleShuffle(item, geometry, tau) {
+  if (tau <= 0) return { x: item.ox, y: item.oy, alpha: 0, rotation: 0 };
+  const t = tau + item.launch;
+
+  if (t < item.gatherEnd) {
+    const s = smoothstep(tau / item.gather);
+    return {
+      x: item.ox + (item.deckX - item.ox) * s,
+      y: item.oy + (item.deckY - item.oy) * s,
+      alpha: 1,
+      rotation: 0,
+    };
+  }
+
+  if (t < geometry.riffleStart) {
+    return { x: item.deckX, y: item.deckY, alpha: 1, rotation: 0 };
+  }
+
+  const splitEnd = geometry.riffleStart + SHUFFLE_SPLIT_MS;
+  if (t < splitEnd) {
+    const s = smoothstep((t - geometry.riffleStart) / SHUFFLE_SPLIT_MS);
+    return {
+      x: item.deckX + (item.splitX - item.deckX) * s,
+      y: item.deckY + (item.splitY - item.deckY) * s,
+      alpha: 1,
+      rotation: item.sign * SHUFFLE_TILT * s,
+    };
+  }
+
+  if (t < splitEnd + SHUFFLE_APPROACH_MS) {
+    const s = smoothstep((t - splitEnd) / SHUFFLE_APPROACH_MS);
+    return {
+      x: item.splitX + (item.approachX - item.splitX) * s,
+      y: item.splitY + (item.approachY - item.splitY) * s,
+      alpha: 1,
+      rotation: item.sign * SHUFFLE_TILT * (1 - (1 - SHUFFLE_APPROACH_TILT) * s),
+    };
+  }
+
+  if (t < geometry.bounceStart) {
+    // The packets resolve into the deck one card after another, so the square-up itself is a
+    // last little riffle rather than a single-frame swap.
+    const s = smoothstep((t - shuffleSquareStart(geometry) - item.squareDelay) / SHUFFLE_SQUARE_MS);
+    return {
+      x: item.approachX + (item.deckX - item.approachX) * s,
+      y: item.approachY + (item.deckY - item.approachY) * s,
+      alpha: 1,
+      rotation: item.sign * SHUFFLE_TILT * SHUFFLE_APPROACH_TILT * (1 - s),
+    };
+  }
+
+  if (t < geometry.exitStart) {
+    const u = clamp((t - geometry.bounceStart) / SHUFFLE_BOUNCE_MS, 0, 1);
+    return {
+      x: item.deckX,
+      y: item.deckY - geometry.bounceAmp * Math.sin(Math.PI * u),
+      alpha: 1,
+      rotation: 0,
+    };
+  }
+
+  // The squared deck leaves as one: straight down, still opaque until the last corner is off
+  // the bottom, then gone. No per-card fade; the canvas fade owns the ending.
+  const u = clamp((t - geometry.exitStart) / geometry.exitDur, 0, 1);
+  return {
+    x: item.deckX,
+    y: item.deckY + (geometry.offY - item.deckY) * u,
+    alpha: u < 1 ? 1 : 0,
+    rotation: 0,
+  };
+}
+
 // ---------- The seam ----------
 
 // One sampler per path: a new path is a line here rather than another branch in the loop.
@@ -615,11 +866,13 @@ const SAMPLERS = {
   waterfall: (item, tau) => sampleWaterfall(item, tau),
   vortex: (item, tau, geometry) => sampleVortex(item, geometry, tau),
   conga: (item, tau, geometry) => sampleConga(item, geometry, tau),
+  shuffle: (item, tau, geometry) => sampleShuffle(item, geometry, tau),
 };
 
 export function buildWinSequence(options = {}) {
   // An unknown name is a coding mistake, not a reason to leave a win uncelebrated: the
   // waterfall is the fallback everywhere else, so it is the fallback here too.
+  if (options.variant === 'shuffle') return buildShuffle(options);
   if (options.variant === 'conga') return buildConga(options);
   if (options.variant === 'vortex') return buildVortex(options);
   return buildWaterfall(options);

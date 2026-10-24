@@ -461,6 +461,168 @@ test('the conga length lands in its band at both ends of the stage sweep', () =>
   assert.ok(long >= 7999 && long <= 8000, `huge stage lasted ${long}ms, not the 8s ceiling`);
 });
 
+// ---------- Shuffle ----------
+const shuffle = (seed = 7) => build(seed, 'shuffle');
+
+test('the shuffle uses all 52 cards exactly once, and says so', () => {
+  const sequence = shuffle();
+  assert.equal(sequence.variant, 'shuffle');
+  assert.equal(sequence.items.length, 52);
+  assert.equal(new Set(sequence.items.map((item) => item.id)).size, 52);
+});
+
+test('a shuffle pass lasts between six and seven seconds', () => {
+  const { duration } = shuffle();
+  assert.ok(duration >= 6000, `duration ${duration}ms is shorter than 6s`);
+  assert.ok(duration <= 7000, `duration ${duration}ms is longer than 7s`);
+});
+
+test('every shuffle card starts on the stage', () => {
+  const sequence = shuffle();
+  for (const item of sequence.items) {
+    const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+    assert.ok(card.alpha > 0, `${item.id} is invisible at its launch`);
+    assert.ok(inside(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+  }
+});
+
+test('the shuffle deck stays on the stage and never returns a NaN', () => {
+  const sequence = shuffle();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const cards = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    assert.equal(cards.size, 52, `sample at ${t}ms lost cards`);
+    for (const item of sequence.items) {
+      const card = cards.get(item.id);
+      assert.ok(Number.isFinite(card.x), `${card.id} x is not finite at ${t}ms`);
+      assert.ok(Number.isFinite(card.y), `${card.id} y is not finite at ${t}ms`);
+      assert.ok(Number.isFinite(card.rotation), `${card.id} rotation is not finite at ${t}ms`);
+      const tau = t - item.launch;
+      // Not launched yet, or already sliding off the stage on purpose at the very end.
+      if (tau <= 0 || t >= item.exit) continue;
+      assert.ok(inside(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
+    }
+  }
+});
+
+test('the shuffle ends on an empty board', () => {
+  const sequence = shuffle();
+  const cards = sampleSequence(sequence, sequence.duration);
+  assert.equal(cards.length, 52);
+  for (const card of cards) {
+    // The deck slides off the stage as one before the sequence ends, so the win card opens
+    // on an empty board. No card is left for the canvas fade to take out.
+    assert.equal(card.alpha, 0, `${card.id} is still on the board at the end`);
+  }
+});
+
+test('shuffle alphas are on or off, never a private fade', () => {
+  const sequence = shuffle();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    for (const card of sampleSequence(sequence, t)) {
+      assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
+    }
+  }
+});
+
+test('the shuffle frames itself from a 320px phone to a landscape iPad, without a jump', () => {
+  const stages = [
+    { name: 'smallest phone', width: 320, height: 568, cw: 42, ch: 59 },
+    { name: 'phone', width: 393, height: 852, cw: 48, ch: 67 },
+    { name: 'iPad', width: 1024, height: 768, cw: 105, ch: 147 },
+    { name: 'iPad Pro landscape', width: 1366, height: 1024, cw: 130, ch: 182 },
+  ];
+  for (const stage of stages) {
+    const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+    const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+      x: 12 + i * (stage.cw + 6),
+      y: 8,
+      cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+    }));
+    const view = {
+      width: stage.width,
+      height: stage.height,
+      left: 0,
+      top: 0,
+      floorY: stage.height - 34 - stage.ch,
+    };
+    const sequence = buildWinSequence({
+      variant: 'shuffle', cards, piles, cw: stage.cw, ch: stage.ch, viewport: view, seed: 9,
+    });
+    const bounds = {
+      width: stage.width,
+      top: 0,
+      bottom: view.floorY + stage.ch,
+      cw: stage.cw,
+      ch: stage.ch,
+    };
+
+    for (const item of sequence.items) {
+      const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+      assert.ok(card.alpha > 0 && inside(card, bounds),
+        `${stage.name}: ${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+    }
+
+    for (let t = 0; t <= sequence.duration; t += 25) {
+      const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const item of sequence.items) {
+        const tau = t - item.launch;
+        if (tau <= 0 || t >= item.exit) continue;
+        const card = byId.get(item.id);
+        assert.ok(inside(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
+      }
+    }
+
+    const frame = 16;
+    for (let t = 0; t + frame <= sequence.duration; t += 50) {
+      const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const card of sampleSequence(sequence, t + frame)) {
+        const previous = before.get(card.id);
+        if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+        assert.ok(moved <= 16, `${stage.name}: ${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+      }
+    }
+
+    assert.equal(sampleSequence(sequence, sequence.duration).filter((c) => c.alpha > 0).length, 0,
+      `${stage.name}: the board is not empty at the end`);
+    assert.ok(sequence.duration >= 6000, `${stage.name}: duration ${sequence.duration}ms is under 6s`);
+    assert.ok(sequence.duration <= 7000, `${stage.name}: duration ${sequence.duration}ms is over 7s`);
+  }
+});
+
+test('the shuffle stays under the notch, not just above the home indicator', () => {
+  const notch = 59;
+  const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+  const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+    x: 12 + i * (cw + 6),
+    y: notch + 8,
+    cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+  }));
+  const view = { ...viewport, top: 0, topInset: notch };
+  const sequence = buildWinSequence({
+    variant: 'shuffle', cards, piles, cw, ch, viewport: view, seed: 4,
+  });
+  const bounds = { ...phoneStage, top: notch };
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const item of sequence.items) {
+      const tau = t - item.launch;
+      if (tau <= 0 || t >= item.exit) continue;
+      const card = byId.get(item.id);
+      assert.ok(inside(card, bounds),
+        `${item.id} crosses the notch at ${t}ms (y=${card.y.toFixed(1)})`);
+    }
+  }
+});
+
+test('a shuffle seed is repeatable, and a different seed is a different pass', () => {
+  const a = shuffle(11);
+  const b = shuffle(11);
+  assert.deepEqual(a.items, b.items);
+  assert.deepEqual(sampleSequence(a, 1234), sampleSequence(b, 1234));
+  assert.notDeepEqual(shuffle(12).items, a.items);
+});
+
 test('the vortex frames itself on a tablet as well as on a phone', () => {
   // The funnel is sized from the stage, so a landscape iPad gets a different composition.
   // It still may not crop a rising card: ticket 01's rule is not a phone-only rule.
