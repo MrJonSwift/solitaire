@@ -261,6 +261,145 @@ test('a vortex seed is repeatable and a different seed is a different pass', () 
   assert.notDeepEqual(vortex(12).items, a.items);
 });
 
+// ---------- Conga ----------
+const conga = (seed = 7) => build(seed, 'conga');
+
+test('the conga uses all 52 cards exactly once, and says so', () => {
+  const sequence = conga();
+  assert.equal(sequence.variant, 'conga');
+  assert.equal(sequence.items.length, 52);
+  assert.equal(new Set(sequence.items.map((item) => item.id)).size, 52);
+});
+
+test('a conga pass lasts between six and eight seconds', () => {
+  const { duration } = conga();
+  assert.ok(duration >= 6000, `duration ${duration}ms is shorter than 6s`);
+  assert.ok(duration <= 8000, `duration ${duration}ms is longer than 8s`);
+});
+
+test('every conga card starts on the stage', () => {
+  const sequence = conga();
+  for (const item of sequence.items) {
+    const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+    assert.ok(card.alpha > 0, `${item.id} is invisible at its launch`);
+    assert.ok(inside(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+  }
+});
+
+test('the conga chain stays on the stage and never returns a NaN', () => {
+  const sequence = conga();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const cards = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    assert.equal(cards.size, 52, `sample at ${t}ms lost cards`);
+    for (const item of sequence.items) {
+      const card = cards.get(item.id);
+      assert.ok(Number.isFinite(card.x), `${card.id} x is not finite at ${t}ms`);
+      assert.ok(Number.isFinite(card.y), `${card.id} y is not finite at ${t}ms`);
+      const tau = t - item.launch;
+      // Not launched yet, or already flying out through the gap on purpose. Everything on
+      // the ring itself is inside the stage: that is the whole geometry promise.
+      // item.exit is an absolute time, not a per-card duration: a card that has reached
+      // the gap is flying off the stage on purpose.
+      if (tau <= 0 || t >= item.exit) continue;
+      assert.ok(inside(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
+    }
+  }
+});
+
+test('the conga ends on an empty board', () => {
+  const sequence = conga();
+  const cards = sampleSequence(sequence, sequence.duration);
+  assert.equal(cards.length, 52);
+  for (const card of cards) {
+    // Every card is already off the stage when the sequence ends, so the win card opens
+    // on an empty board. No card is left for the canvas fade to take out.
+    assert.equal(card.alpha, 0, `${card.id} is still on the board at the end`);
+  }
+});
+
+test('conga alphas are on or off and the tip never over-rotates', () => {
+  const sequence = conga();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    for (const card of sampleSequence(sequence, t)) {
+      assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
+      assert.ok(Number.isFinite(card.rotation), `${card.id} rotation is not finite at ${t}ms`);
+      assert.ok(Math.abs(card.rotation) <= 0.2 + 1e-9, `${card.id} tips ${card.rotation}rad at ${t}ms`);
+    }
+  }
+});
+
+test('the conga frames itself from a 320px phone to a landscape iPad, without a jump', () => {
+  // The circuit is sized from the stage and the card, so every size needs to be swept: a
+  // ring that fits an iPhone can still be cropped on a tablet, and the per-frame step is
+  // measured against the same 16px the other paths are held to.
+  const stages = [
+    { name: 'smallest phone', width: 320, height: 568, cw: 42, ch: 59 },
+    { name: 'phone', width: 393, height: 852, cw: 48, ch: 67 },
+    { name: 'iPad', width: 1024, height: 768, cw: 105, ch: 147 },
+    { name: 'iPad Pro landscape', width: 1366, height: 1024, cw: 130, ch: 182 },
+  ];
+  for (const stage of stages) {
+    const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+    const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+      x: 12 + i * (stage.cw + 6),
+      y: 8, // the foundation row, near the top of the stage
+      cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+    }));
+    const view = {
+      width: stage.width,
+      height: stage.height,
+      left: 0,
+      top: 0,
+      floorY: stage.height - 34 - stage.ch,
+    };
+    const sequence = buildWinSequence({
+      variant: 'conga', cards, piles, cw: stage.cw, ch: stage.ch, viewport: view, seed: 9,
+    });
+    const bottom = view.floorY + stage.ch;
+    const fits = (card) => {
+      const cos = Math.abs(Math.cos(card.rotation));
+      const sin = Math.abs(Math.sin(card.rotation));
+      const ex = (cos * stage.cw + sin * stage.ch) / 2;
+      const ey = (sin * stage.cw + cos * stage.ch) / 2;
+      const cx = card.x + stage.cw / 2;
+      const cy = card.y + stage.ch / 2;
+      return cx - ex >= -0.6 && cx + ex <= stage.width + 0.6
+        && cy - ey >= -0.6 && cy + ey <= bottom + 0.6;
+    };
+
+    for (const item of sequence.items) {
+      const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+      assert.ok(card.alpha > 0 && fits(card),
+        `${stage.name}: ${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+    }
+
+    for (let t = 0; t <= sequence.duration; t += 25) {
+      const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const item of sequence.items) {
+        const tau = t - item.launch;
+        if (tau <= 0 || t >= item.exit) continue;
+        const card = byId.get(item.id);
+        assert.ok(fits(card), `${stage.name}: ${item.id} is cropped at ${t}ms`);
+      }
+    }
+
+    const frame = 16;
+    for (let t = 0; t + frame <= sequence.duration; t += 50) {
+      const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const card of sampleSequence(sequence, t + frame)) {
+        const previous = before.get(card.id);
+        if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+        assert.ok(moved <= 16, `${stage.name}: ${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+      }
+    }
+
+    assert.equal(sampleSequence(sequence, sequence.duration).filter((c) => c.alpha > 0).length, 0,
+      `${stage.name}: the board is not empty at the end`);
+    assert.ok(sequence.duration <= 9000, `${stage.name}: duration ${sequence.duration}ms is too long`);
+  }
+});
+
 test('the vortex frames itself on a tablet as well as on a phone', () => {
   // The funnel is sized from the stage, so a landscape iPad gets a different composition.
   // It still may not crop a rising card: ticket 01's rule is not a phone-only rule.

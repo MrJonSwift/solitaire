@@ -293,11 +293,305 @@ function sampleVortex(item, geometry, tau) {
   return { x, y, alpha: tau < item.flight ? 1 : 0, rotation };
 }
 
+// ---------- Conga ----------
+// The third 2D path, and the one with a different silhouette: not a shower of cards but a
+// queue. Every card leaves its foundation and joins one line that travels around a rounded
+// circuit of the stage, neighbours at a fixed distance so the line reads as a chain, then
+// the whole queue files off through a single gap in the ring and the board is empty for
+// the win card.
+//
+// The line is a moving walkway: a card joins at the back, travels with the rest, and leaves
+// at the front. Positions are arithmetic on one distance, so a card is on the ring for as
+// long as the schedule says, and the queue can never bunch up or lap itself.
+const CONGA_STAGGER_MS = 65;      // one card leaves its foundation every 65ms
+const CONGA_LAP_MS = 2100;        // one circuit of the ring at the design speed
+const CONGA_MAX_SPEED = 0.8;      // px per ms. A cap, not a preference: a long circuit on a
+                                  // tablet would otherwise step further per frame than a
+                                  // phone does, and the queue would strobe on the big screen.
+const CONGA_STEP = 0.55;          // neighbour spacing, as a fraction of card width
+const CONGA_FILL = 0.8;          // the most of the ring 52 cards may occupy. Leave a gap,
+                                  // or the head and tail touch and it reads as a closed ring,
+                                  // not a line with a front and a back.
+const CONGA_ENTRY_HEADROOM = 1.95; // ms of spring per px of gap, so the ease's peak stays
+                                  // smooth even when the slot is across the stage
+const CONGA_ENTRY_MIN_MS = 450;
+const CONGA_ENTRY_MAX_MS = 2600;
+const CONGA_BEAT_MS = 250;        // the ring is whole before the first card leaves it
+const CONGA_MIN_MS = 6200;        // the celebration's window, like the other 2D paths
+const CONGA_MAX_MS = 8000;
+const CONGA_EXIT_SPEED = 0.8;     // px per ms, straight out through the gap
+const CONGA_EXIT_MIN_MS = 140;
+const CONGA_EXIT_MAX_MS = 900;
+const CONGA_TIP = 0.2;            // radians of side-to-side tip, about 11 degrees
+const CONGA_TIP_WAVES = 2;        // sway wavelengths along the queue, so it ripples
+const CONGA_TIP_PERIOD_MS = 900;
+const CONGA_BOB = 0.06;           // the whole line's vertical bob, as a fraction of card height
+const CONGA_BOB_PERIOD_MS = 1100;
+const CONGA_RADIUS = 0.4;         // corner radius of the circuit, of its short half-axis
+
+// The circuit is a rounded rectangle: the longest closed loop that stays on a stage, which
+// is what keeps 52 cards from bunching into a band on a 320px phone. The bounds are built
+// from the card's rotated extent, so the tip and the bob can never push a corner off an
+// edge, and from the floor the other paths rest on, so no card hangs over the home indicator.
+function makeCongaLoop(width, height, bottom, cardWidth, cardHeight, tip, bob) {
+  const cos = Math.abs(Math.cos(tip));
+  const sin = Math.abs(Math.sin(tip));
+  const ex = (cos * cardWidth + sin * cardHeight) / 2 + 4;
+  const ey = (sin * cardWidth + cos * cardHeight) / 2 + 4 + bob;
+  const halfW = Math.max(1, width / 2 - ex);
+  const halfH = Math.max(1, (bottom - 2 * ey) / 2);
+  const r = Math.max(0, Math.min(halfW, halfH) * CONGA_RADIUS);
+  const sx = 2 * (halfW - r); // length of one horizontal straight
+  const sy = 2 * (halfH - r); // length of one vertical straight
+  const arc = (Math.PI * r) / 2;
+  return {
+    cx: width / 2,
+    cy: ey + halfH,
+    halfW,
+    halfH,
+    r,
+    sx,
+    sy,
+    arc,
+    length: 2 * sx + 2 * sy + 4 * arc,
+    cw: cardWidth,
+    ch: cardHeight,
+  };
+}
+
+// Distance along the circuit, clockwise from the top-left of the top straight, to the
+// card's top-left corner. One function, no table, so a sample is a few compares and no
+// allocation beyond the returned point.
+function congaAt(loop, distance) {
+  const { cx, cy, halfW, halfH, r, sx, sy, arc, length } = loop;
+  let u = distance % length;
+  if (u < 0) u += length;
+  let x;
+  let y;
+  if (u < sx) {
+    x = cx - halfW + r + u;
+    y = cy - halfH;
+  } else if ((u -= sx) < arc) {
+    const a = -Math.PI / 2 + u / r;
+    x = cx + halfW - r + r * Math.cos(a);
+    y = cy - halfH + r + r * Math.sin(a);
+  } else if ((u -= arc) < sy) {
+    x = cx + halfW;
+    y = cy - halfH + r + u;
+  } else if ((u -= sy) < arc) {
+    const a = u / r;
+    x = cx + halfW - r + r * Math.cos(a);
+    y = cy + halfH - r + r * Math.sin(a);
+  } else if ((u -= arc) < sx) {
+    x = cx + halfW - r - u;
+    y = cy + halfH;
+  } else if ((u -= sx) < arc) {
+    const a = Math.PI / 2 + u / r;
+    x = cx - halfW + r + r * Math.cos(a);
+    y = cy + halfH - r + r * Math.sin(a);
+  } else if ((u -= arc) < sy) {
+    x = cx - halfW;
+    y = cy + halfH - r - u;
+  } else {
+    const a = Math.PI + clamp(u - sy, 0, arc) / r;
+    x = cx - halfW + r + r * Math.cos(a);
+    y = cy - halfH + r + r * Math.sin(a);
+  }
+  return { x: x - loop.cw / 2, y: y - loop.ch / 2 };
+}
+
+function buildConga({
+  cards = [],
+  piles = [],
+  cw = 0,
+  ch = 0,
+  viewport = {},
+  seed = 1,
+} = {}) {
+  const width = Math.max(0, finite(viewport.width));
+  const height = Math.max(0, finite(viewport.height));
+  const cardWidth = Math.max(0, finite(cw));
+  const cardHeight = Math.max(0, finite(ch));
+  const left = finite(viewport.left);
+  const top = finite(viewport.top);
+  const bottomInset = Math.max(0, finite(viewport.bottomInset));
+  const floorY = Number.isFinite(viewport.floorY)
+    ? clamp(viewport.floorY, 0, height)
+    : Math.max(0, height - bottomInset - cardHeight);
+  const rng = seededRandom(seed);
+  const ordered = launchOrder(cards, piles);
+  const bob = cardHeight * CONGA_BOB;
+  const loop = makeCongaLoop(width, height, floorY + cardHeight, cardWidth, cardHeight, CONGA_TIP, bob);
+  // Spacing answers to both the card and the circuit: tight enough to fit every card with
+  // a gap left over, loose enough that neighbours overlap only partly and the faces read.
+  const count = Math.max(1, ordered.length);
+  const spacing = Math.max(1, Math.min(cardWidth * CONGA_STEP, (loop.length * CONGA_FILL) / count));
+  const speed = Math.min(loop.length / CONGA_LAP_MS, CONGA_MAX_SPEED);
+
+  // The spring is sized from the distance it has to cover, so a card at the far side of
+  // the ring does not have to cross the stage faster than a card that joins beside its
+  // foundation. The landing point is fixed at hand-over: a card chases nothing, it lands
+  // in the slot the queue will have reached by then, which is what keeps the step smooth.
+  const entryFor = (ox, oy, launch, offset) => {
+    let entry = CONGA_ENTRY_MIN_MS;
+    for (let pass = 0; pass < 40; pass++) {
+      const target = congaAt(loop, speed * (launch + entry) - offset);
+      const wanted = Math.min(
+        CONGA_ENTRY_MAX_MS,
+        Math.hypot(target.x - ox, target.y - oy) * CONGA_ENTRY_HEADROOM,
+      );
+      // Never shrink: the landing point moves forward as the spring grows, and a shrinking
+      // estimate would chase it round the ring. The cap is the only thing that can bite.
+      const next = Math.max(entry, wanted);
+      if (next === entry) break;
+      entry = next;
+    }
+    return Math.max(CONGA_ENTRY_MIN_MS, entry);
+  };
+
+  const items = ordered.map(({ card, pile }, index) => {
+    const origin = piles[pile] || {};
+    // Same small scatter as the vortex, and clamped for the same reason: a tablet's
+    // foundations sit close to the edge, and a card may not start half off the stage.
+    const ox = clamp(finite(origin.x) - left + (rng() - 0.5) * cardWidth * 0.3, 0, Math.max(0, width - cardWidth));
+    const oy = clamp(finite(origin.y) - top + (rng() - 0.5) * cardHeight * 0.3, 0, Math.max(0, height - cardHeight));
+    const launch = index * CONGA_STAGGER_MS;
+    const offset = index * spacing;
+    const entry = entryFor(ox, oy, launch, offset);
+    const slot = congaAt(loop, speed * (launch + entry) - offset);
+    return {
+      id: card.id || card.suit + card.rank,
+      suit: card.suit,
+      rank: card.rank,
+      pile,
+      launch,
+      offset,
+      entry,
+      tx: slot.x,
+      ty: slot.y,
+      ox,
+      oy,
+    };
+  });
+
+  // The gap the queue leaves through is wherever the head is when the drain begins. The
+  // drain starts once every card has joined — unless the whole pass would run past the
+  // celebration's deadline, in which case the head leaves earlier and the queue is still
+  // filling as it drains. The band is deliberate: six to eight seconds, like the others.
+  const lastEntry = items.reduce((max, item) => Math.max(max, item.launch + item.entry), 0);
+  const natural = lastEntry + CONGA_BEAT_MS;
+  const exitStep = spacing / speed; // one card's gap passes the exit every step
+  const train = Math.max(0, items.length - 1) * exitStep;
+  const half = Math.hypot(cardWidth, cardHeight) / 2;
+
+  // No card may leave the ring before it has landed in it, whatever the deadline says.
+  let floor = 0;
+  items.forEach((item, index) => { floor = Math.max(floor, item.launch + item.entry - index * exitStep); });
+
+  const exitAt = (firstExit) => {
+    const door = congaAt(loop, speed * firstExit);
+    const doorCx = door.x + cardWidth / 2;
+    const doorCy = door.y + cardHeight / 2;
+    // Outward from the middle of the stage: every card leaves by the nearest edge, which
+    // is the shortest way off the stage and never crosses the queue.
+    const away = Math.hypot(doorCx - loop.cx, doorCy - loop.cy) || 1;
+    const ux = (doorCx - loop.cx) / away;
+    const uy = (doorCy - loop.cy) / away;
+    const edgeX = ux > 1e-6 ? (width + half - doorCx) / ux : ux < -1e-6 ? (-half - doorCx) / ux : Infinity;
+    const edgeY = uy > 1e-6 ? (height + half - doorCy) / uy : uy < -1e-6 ? (-half - doorCy) / uy : Infinity;
+    const burst = clamp(
+      Math.min(edgeX, edgeY) / CONGA_EXIT_SPEED,
+      CONGA_EXIT_MIN_MS,
+      CONGA_EXIT_MAX_MS,
+    );
+    return { door, ux, uy, burst };
+  };
+
+  let exit = exitAt(natural);
+  let firstExit = natural;
+  for (let pass = 0; pass < 3; pass++) {
+    const total = firstExit + train + exit.burst;
+    const wanted = clamp(total, CONGA_MIN_MS, CONGA_MAX_MS);
+    firstExit = Math.max(floor, natural + (wanted - total));
+    exit = exitAt(firstExit);
+  }
+
+  items.forEach((item, index) => {
+    item.exit = firstExit + index * exitStep;
+    item.flight = item.exit + exit.burst;
+  });
+
+  const duration = items.length ? Math.max(...items.map((item) => item.flight)) : 0;
+  return {
+    variant: 'conga',
+    duration,
+    viewport: { width, height, floorY },
+    geometry: {
+      ...loop,
+      speed,
+      bob,
+      tip: CONGA_TIP,
+      tipWaves: CONGA_TIP_WAVES,
+      doorDistance: ((speed * firstExit) % loop.length + loop.length) % loop.length,
+      doorX: exit.door.x,
+      doorY: exit.door.y,
+      ux: exit.ux,
+      uy: exit.uy,
+    },
+    items,
+  };
+}
+
+function sampleConga(item, geometry, tau) {
+  if (tau <= 0) return { x: item.ox, y: item.oy, alpha: 0, rotation: 0 };
+  const now = tau + item.launch;
+  const bob = geometry.bob * Math.sin((TAU * now) / CONGA_BOB_PERIOD_MS);
+  const distance = finite(geometry.speed * now - item.offset);
+
+  if (tau < item.entry) {
+    // Spring from the pile onto the moving line, landing in the slot the queue will have
+    // reached at hand-over. A fixed landing point means a straight, evenly paced flight.
+    const t = clamp(tau / item.entry, 0, 1);
+    const s = t * t * (3 - 2 * t);
+    const sway = congaSway(geometry, distance, now);
+    return {
+      x: item.ox + (item.tx - item.ox) * s,
+      y: item.oy + (item.ty + bob - item.oy) * s,
+      alpha: 1,
+      rotation: sway * s,
+    };
+  }
+
+  const sway = congaSway(geometry, now < item.exit ? distance : geometry.doorDistance, now);
+  if (now < item.exit) {
+    const point = congaAt(geometry, distance);
+    return { x: point.x, y: point.y + bob, alpha: 1, rotation: sway };
+  }
+
+  // The line files out through the gap: straight, outward, still bobbing, gone before the
+  // win card arrives. No private fade — a card is either on the stage or off it.
+  const bt = now - item.exit;
+  return {
+    x: geometry.doorX + geometry.ux * CONGA_EXIT_SPEED * bt,
+    y: geometry.doorY + bob + geometry.uy * CONGA_EXIT_SPEED * bt,
+    alpha: now < item.flight ? 1 : 0,
+    rotation: sway,
+  };
+}
+
+// The ripple runs along the queue as well as through time, so the line looks like it is
+// dancing rather than sliding.
+function congaSway(geometry, distance, now) {
+  const s = (((distance % geometry.length) + geometry.length) % geometry.length) / geometry.length;
+  return geometry.tip * Math.sin(TAU * (s * geometry.tipWaves - now / CONGA_TIP_PERIOD_MS));
+}
+
 // ---------- The seam ----------
 
 export function buildWinSequence(options = {}) {
   // An unknown name is a coding mistake, not a reason to leave a win uncelebrated: the
   // waterfall is the fallback everywhere else, so it is the fallback here too.
+  if (options.variant === 'conga') return buildConga(options);
   if (options.variant === 'vortex') return buildVortex(options);
   return buildWaterfall(options);
 }
@@ -305,10 +599,13 @@ export function buildWinSequence(options = {}) {
 export function sampleSequence(sequence, t) {
   if (!sequence || !Array.isArray(sequence.items)) return [];
   const time = clamp(finite(t), 0, finite(sequence.duration));
+  const conga = sequence.variant === 'conga' ? sequence.geometry : null;
   const vortex = sequence.variant === 'vortex' ? sequence.geometry : null;
   return sequence.items.map((item) => {
     const tau = time - item.launch;
-    const point = vortex ? sampleVortex(item, vortex, tau) : sampleWaterfall(item, tau);
+    const point = conga
+      ? sampleConga(item, conga, tau)
+      : vortex ? sampleVortex(item, vortex, tau) : sampleWaterfall(item, tau);
     return {
       id: item.id,
       x: point.x,
