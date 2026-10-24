@@ -5,7 +5,7 @@
 // RELEASE RULE: bump VERSION whenever any app file changes. The browser only notices an update
 // when sw.js itself changes. New files must also be added to SHELL.
 // The update downloads in the background and is used from the next launch after that.
-const VERSION = 'v5';
+const VERSION = 'v6';
 const CACHE = `solitaire-${VERSION}`;
 const SHELL = [
   './',
@@ -16,6 +16,7 @@ const SHELL = [
   './js/app.js',
   './js/game.js',
   './js/celebrate.js',
+  './js/celebration-rotation.js',
   './js/choreography.js',
   './js/celebration-geometry.js',
   './js/celebration-stage.js',

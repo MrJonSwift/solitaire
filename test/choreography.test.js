@@ -123,3 +123,175 @@ test('a fixed seed is repeatable and sampling does not depend on call order', ()
   const other = build(12);
   assert.notDeepEqual(other.items, a.items);
 });
+
+// ---------- Vortex ----------
+const vortex = (seed = 7) => build(seed, 'vortex');
+
+// A spinning card's corners define what the player actually sees, so every bound here is
+// measured from the rotated rectangle, not from the card's unrotated edges.
+const bottom = viewport.floorY + ch; // where a card at rest puts its bottom edge
+const inside = (card) => {
+  const cos = Math.abs(Math.cos(card.rotation));
+  const sin = Math.abs(Math.sin(card.rotation));
+  const ex = (cos * cw + sin * ch) / 2;
+  const ey = (sin * cw + cos * ch) / 2;
+  const cx = card.x + cw / 2;
+  const cy = card.y + ch / 2;
+  return cx - ex >= -0.6 && cx + ex <= viewport.width + 0.6
+    && cy - ey >= -0.6 && cy + ey <= bottom + 0.6;
+};
+
+test('the vortex uses all 52 cards exactly once, and says so', () => {
+  const sequence = vortex();
+  assert.equal(sequence.variant, 'vortex');
+  assert.equal(sequence.items.length, 52);
+  assert.equal(new Set(sequence.items.map((item) => item.id)).size, 52);
+});
+
+test('a vortex pass lasts between four and nine seconds', () => {
+  const { duration } = vortex();
+  assert.ok(duration >= 4000, `duration ${duration}ms is shorter than 4s`);
+  assert.ok(duration <= 9000, `duration ${duration}ms is longer than 9s`);
+});
+
+test('the funnel never puts a card past an edge while it is on the way up', () => {
+  const sequence = vortex();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const cards = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const item of sequence.items) {
+      const tau = t - item.launch;
+      // Not launched yet, or already thrown off the stage on purpose. Up to the neck nothing
+      // may be cropped: that is the whole of ticket 01's geometry promise.
+      if (tau <= 0 || tau >= item.spinEnd) continue;
+      const card = cards.get(item.id);
+      assert.ok(inside(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
+    }
+  }
+});
+
+test('a vortex card springs from its own foundation, and the suits hold four ribbons', () => {
+  const { cards, piles } = board();
+  const sequence = vortex();
+  for (const item of sequence.items) {
+    const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+    const origin = piles[item.pile];
+    assert.ok(card.alpha > 0, `${card.id} is invisible at its launch`);
+    assert.ok(Math.abs(card.x - origin.x) <= cw * 0.15 + 5,
+      `${card.id} started at x=${card.x}, not at its pile (${origin.x})`);
+    assert.ok(Math.abs(card.y - origin.y) <= ch * 0.15 + 5,
+      `${card.id} started at y=${card.y}, not at its pile (${origin.y})`);
+  }
+  // Every card must *begin* on the stage. The launch scatter is proportional to the card,
+  // so on a tablet it is wider than the gap between the foundation row and the top edge:
+  // unclamped, a card starts above the top for the first frames of its spring. Checked on
+  // the origins rather than on sampled frames, because the ease-out clears the pile within
+  // one frame and a time-sampled test cannot see it.
+  for (const k of [
+    { cw, ch, name: 'phone' },
+    { cw: 105, ch: 147, name: 'tablet' },
+  ]) {
+    const stage = { width: 393, height: 852, left: 0, top: 0, floorY: 852 - 34 - k.ch };
+    const laid = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+      x: 12 + i * (k.cw + 6),
+      y: 8, // the foundation row, near the top of the stage
+      cards: piles[i].cards,
+    }));
+    const seq = buildWinSequence({
+      variant: 'vortex', cards, piles: laid, cw: k.cw, ch: k.ch, viewport: stage, seed: 9,
+    });
+    for (const item of seq.items) {
+      assert.ok(item.ox >= -0.001 && item.ox + k.cw <= stage.width + 0.001,
+        `${k.name}: ${item.id} starts off the side (x=${item.ox})`);
+      assert.ok(item.oy >= -0.001 && item.oy + k.ch <= stage.height + 0.001,
+        `${k.name}: ${item.id} starts off the top or bottom (y=${item.oy})`);
+    }
+  }
+
+  // Each suit holds one angular offset, a quarter turn apart. Without that the funnel is a
+  // crowd of cards rather than four reading ribbons.
+  const bySuit = new Map();
+  for (const item of sequence.items) {
+    if (!bySuit.has(item.suit)) bySuit.set(item.suit, []);
+    bySuit.get(item.suit).push(item.theta0);
+  }
+  const means = [...bySuit.values()].map((list) => {
+    const x = list.reduce((sum, t) => sum + Math.cos(t), 0);
+    const y = list.reduce((sum, t) => sum + Math.sin(t), 0);
+    return Math.atan2(y, x);
+  }).sort((a, b) => a - b);
+  const gaps = means.map((angle, i) => (i === 0
+    ? means[0] + Math.PI * 2 - means[means.length - 1]
+    : angle - means[i - 1]));
+  for (const gap of gaps) {
+    assert.ok(Math.abs(gap - Math.PI / 2) < 0.35, `ribbon gap ${gap.toFixed(2)}rad is not a quarter turn`);
+  }
+});
+
+test('the vortex never teleports: 16ms never moves a live card 60px', () => {
+  const sequence = vortex();
+  const frame = 16;
+  for (let t = 0; t + frame <= sequence.duration; t += 50) {
+    const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const card of sampleSequence(sequence, t + frame)) {
+      const previous = before.get(card.id);
+      if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+      const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+      assert.ok(moved <= 60, `${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+    }
+  }
+});
+
+test('the vortex ends on the canvas fade, not on 52 cards evaporating', () => {
+  const sequence = vortex();
+  const cards = sampleSequence(sequence, sequence.duration);
+  assert.equal(cards.length, 52);
+  assert.ok(cards.some((card) => card.alpha === 1), 'the fade had nothing left to take out');
+  for (const card of cards) {
+    // Either still flying for the canvas fade, or already gone. Never mid-fade: a card seen
+    // fading on its own is the defect the waterfall's ending already fixed.
+    assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
+  }
+});
+
+test('a vortex seed is repeatable and a different seed is a different pass', () => {
+  const a = vortex(11);
+  const b = vortex(11);
+  assert.deepEqual(a.items, b.items);
+  assert.deepEqual(sampleSequence(a, 1234), sampleSequence(b, 1234));
+  assert.notDeepEqual(vortex(12).items, a.items);
+});
+
+test('the vortex frames itself on a tablet as well as on a phone', () => {
+  // The funnel is sized from the stage, so a landscape iPad gets a different composition.
+  // It still may not crop a rising card: ticket 01's rule is not a phone-only rule.
+  const wideCw = 105;
+  const wideCh = 147;
+  const wide = { width: 1024, height: 768, left: 0, top: 0, floorY: 601 };
+  const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+  const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+    x: 40 + i * 120,
+    y: 24,
+    cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+  }));
+  const sequence = buildWinSequence({
+    variant: 'vortex', cards, piles, cw: wideCw, ch: wideCh, viewport: wide, seed: 3,
+  });
+  const bottom = wide.floorY + wideCh;
+  for (let t = 0; t <= sequence.duration; t += 20) {
+    const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const item of sequence.items) {
+      const tau = t - item.launch;
+      if (tau <= 0 || tau >= item.spinEnd) continue;
+      const card = byId.get(item.id);
+      const cos = Math.abs(Math.cos(card.rotation));
+      const sin = Math.abs(Math.sin(card.rotation));
+      const ex = (cos * wideCw + sin * wideCh) / 2;
+      const ey = (sin * wideCw + cos * wideCh) / 2;
+      const cx = card.x + wideCw / 2;
+      const cy = card.y + wideCh / 2;
+      assert.ok(cx - ex >= -0.6 && cx + ex <= wide.width + 0.6
+        && cy - ey >= -0.6 && cy + ey <= bottom + 0.6,
+        `${card.id} is cropped at ${t}ms on the tablet (x=${card.x}, y=${card.y})`);
+    }
+  }
+});

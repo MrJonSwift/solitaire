@@ -1,5 +1,9 @@
 // Pure choreography for win celebrations. Builds one sequence from card and viewport data,
 // then samples it at a time. No DOM, no canvas, no timers: Node can prove the shape of a win.
+//
+// Two paths live here and share the seam. `waterfall` is the shipped cascade, which leaves
+// trails and lets every card fall off the sides. `vortex` is the second celebration: the four
+// foundations unwind into one funnel and burst. The renderer draws whichever it is handed.
 import { seededRandom } from './game.js';
 
 // The one taste knob for density. 52 cards at 120ms is a 6.12s launch window.
@@ -12,6 +16,7 @@ const DT = 1 / 60;
 const FLOOR_BOUNCE = 0.78;
 const END_TAIL_MS = 1500; // the canvas fade takes the last cards out; no card fades alone
 
+const TAU = Math.PI * 2;
 const finite = (value, fallback = 0) => (Number.isFinite(value) ? value : fallback);
 const clamp = (value, min, max) => Math.min(max, Math.max(min, value));
 
@@ -41,8 +46,9 @@ function launchOrder(cards, piles) {
   return ordered;
 }
 
-export function buildWinSequence({
-  variant = 'waterfall',
+// ---------- Waterfall ----------
+
+function buildWaterfall({
   cards = [],
   piles = [],
   cw = 0,
@@ -112,10 +118,10 @@ export function buildWinSequence({
   });
 
   const duration = (items.length ? Math.max(...items.map((item) => item.launch)) : 0) + END_TAIL_MS;
-  return { variant, duration, viewport: { width, height, floorY: safeFloor }, items };
+  return { variant: 'waterfall', duration, viewport: { width, height, floorY: safeFloor }, items };
 }
 
-function sampleAt(item, tau) {
+function sampleWaterfall(item, tau) {
   if (tau <= 0) return { x: item.points[0].x, y: item.points[0].y, alpha: 0 };
   if (tau >= item.flight) {
     const last = item.points[item.points.length - 1];
@@ -129,18 +135,186 @@ function sampleAt(item, tau) {
   return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, alpha: 1 };
 }
 
+// ---------- Vortex ----------
+// One card's life: it springs from its foundation corner to the foot of the funnel, climbs
+// the inside of it while the funnel opens out, and is thrown away from the top rim. The four
+// foundations hold four quarter-turn offsets, so the funnel reads as four ribbons rather
+// than a crowd of cards.
+//
+// The ending is the waterfall's, by the same recorded rule: no card fades on its own. Cards
+// leave the stage and the whole canvas fades, so the last few are never seen evaporating.
+const VORTEX_ENTRY_MS = 800;    // corner to the bottom ring. Long enough that the spring
+                                // from the pile stays under the 60px-a-frame rule.
+const VORTEX_SPIN_MS = 1300;    // one card's climb up the funnel. Short against the entry
+                                // window on purpose: a long climb keeps all 52 cards in the
+                                // funnel at once, which is a wall of cards, not a spiral.
+const VORTEX_STAGGER_MS = 60;   // one card leaves its foundation every 60ms. The funnel
+                                // then holds about twenty cards at a time and the other
+                                // thirty are still on their way, so the whole screen moves.
+const VORTEX_BURST_MS = 1000;   // longest a card may fly before it must be off the stage
+const VORTEX_TURNS = 1.6;       // rounds of the funnel during the climb
+const VORTEX_FOOT = 0.3;        // radius at the floor, as a fraction of the widest ring.
+                                // The funnel opens upward like a whirlwind: a barrel or a
+                                // closed cone silhouettes as a column or a knot of cards.
+const VORTEX_SQUASH = 0.6;      // a ring seen from a little below, not a flat circle
+const VORTEX_END_MS = 250;      // cut the sequence while the last cards are still in flight,
+                                // so the canvas fade has something to take out
+
+const easeOut = (x) => 1 - (1 - clamp(x, 0, 1)) ** 3;
+
+// The card's top-left corner on the funnel. `p` runs 0 at the bottom ring to 1 at the top.
+function vortexRing(geometry, p, theta, scale) {
+  const r = geometry.R * (VORTEX_FOOT + (1 - VORTEX_FOOT) * p ** 0.55) * scale;
+  return {
+    x: geometry.cx + r * Math.cos(theta) - geometry.cw / 2,
+    y: geometry.baseY + (geometry.apexY - geometry.baseY) * p
+      + r * VORTEX_SQUASH * Math.sin(theta) - geometry.ch / 2,
+  };
+}
+
+function buildVortex({
+  cards = [],
+  piles = [],
+  cw = 0,
+  ch = 0,
+  viewport = {},
+  seed = 1,
+} = {}) {
+  const width = Math.max(0, finite(viewport.width));
+  const height = Math.max(0, finite(viewport.height));
+  const cardWidth = Math.max(0, finite(cw));
+  const cardHeight = Math.max(0, finite(ch));
+  const left = finite(viewport.left);
+  const top = finite(viewport.top);
+  const bottomInset = Math.max(0, finite(viewport.bottomInset));
+  const floorY = Number.isFinite(viewport.floorY)
+    ? clamp(viewport.floorY, 0, height)
+    : Math.max(0, height - bottomInset - cardHeight);
+  const rng = seededRandom(seed);
+
+  // `half` is the corner radius of a card: once a card turns, its corner is what reaches
+  // furthest, so every bound below is built from the corner and not from the edges. This is
+  // what keeps the funnel off the screen edges at any rotation.
+  const half = Math.hypot(cardWidth, cardHeight) / 2;
+  // Never widen the funnel past what fits: on a narrow stage a floor of one card width would
+  // push the ring itself off the sides. A stage too small for any ring gets a tight one.
+  const R = Math.max(1, Math.min(width / 2 - half - 6, height * 0.3));
+  const cx = width / 2;
+  // The bottom ring sits on the floor at rest, and the flared top ring stays clear of the
+  // notch: the ring's own vertical swing is counted, because the funnel is widest at both
+  // ends and that is where a corner would leave the stage.
+  const baseY = floorY + cardHeight - R * VORTEX_SQUASH - half;
+  const apexY = Math.min(
+    Math.max(half + R * VORTEX_SQUASH + 16, height * 0.16),
+    baseY - cardHeight,
+  );
+  const geometry = { cx, baseY, apexY, R, cw: cardWidth, ch: cardHeight };
+
+  const ordered = launchOrder(cards, piles);
+  const items = ordered.map(({ card, pile }, index) => {
+    const origin = piles[pile] || {};
+    // A little scatter on the pile, so thirteen cards do not leave from one pixel. The
+    // scatter is proportional to the card, so on a tablet it is larger than the gap between
+    // the foundation row and the top of the stage: clamp it, or a card starts half off the
+    // top edge for its first frames. Cards are unrotated at this instant, so a plain
+    // rectangle clamp on the top-left corner is exact.
+    const ox = clamp(finite(origin.x) - left + (rng() - 0.5) * cardWidth * 0.3, 0, Math.max(0, width - cardWidth));
+    const oy = clamp(finite(origin.y) - top + (rng() - 0.5) * cardHeight * 0.3, 0, Math.max(0, height - cardHeight));
+    // One ribbon per foundation, a quarter-turn apart, with a small jitter so the strands
+    // do not look printed. The rank order from launchOrder spaces the cards along it.
+    const theta0 = ((pile % 4) * TAU) / 4 + (rng() - 0.5) * 0.2;
+    const scale = 0.82 + rng() * 0.18;
+    const end = theta0 + VORTEX_TURNS * TAU;
+    const rim = vortexRing(geometry, 1, end, scale);
+    const angle = end + (rng() - 0.5) * 0.8;
+    const speed = ((1.6 + rng() * 1.2) * Math.min(width, height)) / 1000; // px per ms
+    const vx = Math.cos(angle) * speed;
+    const vy = Math.sin(angle) * speed;
+
+    // Once the card's corners clear the stage it is done. Solved rather than stepped,
+    // because the burst is a straight line.
+    const centreX = rim.x + cardWidth / 2;
+    const centreY = rim.y + cardHeight / 2;
+    const exitX = vx > 0 ? (width + half - centreX) / vx : vx < 0 ? (-half - centreX) / vx : Infinity;
+    const exitY = vy > 0 ? (height + half - centreY) / vy : vy < 0 ? (-half - centreY) / vy : Infinity;
+    const burst = Math.max(120, Math.min(VORTEX_BURST_MS, exitX, exitY));
+
+    const launch = index * VORTEX_STAGGER_MS;
+    return {
+      id: card.id || card.suit + card.rank,
+      suit: card.suit,
+      rank: card.rank,
+      pile,
+      launch,
+      entry: VORTEX_ENTRY_MS,
+      spinEnd: VORTEX_ENTRY_MS + VORTEX_SPIN_MS,
+      flight: VORTEX_ENTRY_MS + VORTEX_SPIN_MS + burst,
+      ox,
+      oy,
+      theta0,
+      scale,
+      burst: { x: rim.x, y: rim.y, vx, vy, rotation: end + Math.PI / 2 },
+    };
+  });
+
+  const last = items.length ? Math.max(...items.map((item) => item.launch + item.flight)) : 0;
+  const duration = Math.max(1000, last - VORTEX_END_MS);
+  return { variant: 'vortex', duration, viewport: { width, height, floorY }, geometry, items };
+}
+
+function sampleVortex(item, geometry, tau) {
+  if (tau <= 0) return { x: item.ox, y: item.oy, alpha: 0, rotation: 0 };
+
+  if (tau < item.entry) {
+    // Spring out of the pile and catch the ring. The card turns to face the funnel as it
+    // arrives, so the ribbon has no card sitting flat across it.
+    const s = easeOut(tau / item.entry);
+    const ring = vortexRing(geometry, 0, item.theta0, item.scale);
+    return {
+      x: item.ox + (ring.x - item.ox) * s,
+      y: item.oy + (ring.y - item.oy) * s,
+      alpha: 1,
+      rotation: (item.theta0 + Math.PI / 2) * s,
+    };
+  }
+
+  if (tau < item.spinEnd) {
+    const p = (tau - item.entry) / (item.spinEnd - item.entry);
+    const theta = item.theta0 + VORTEX_TURNS * TAU * p;
+    const ring = vortexRing(geometry, p, theta, item.scale);
+    return { x: ring.x, y: ring.y, alpha: 1, rotation: theta + Math.PI / 2 };
+  }
+
+  const bt = tau - item.spinEnd;
+  const x = item.burst.x + item.burst.vx * bt;
+  const y = item.burst.y + item.burst.vy * bt;
+  // The spin carries into the flight, so a card never stops dead when it is thrown.
+  const rotation = item.burst.rotation + ((VORTEX_TURNS * TAU) / VORTEX_SPIN_MS) * bt;
+  return { x, y, alpha: tau < item.flight ? 1 : 0, rotation };
+}
+
+// ---------- The seam ----------
+
+export function buildWinSequence(options = {}) {
+  // An unknown name is a coding mistake, not a reason to leave a win uncelebrated: the
+  // waterfall is the fallback everywhere else, so it is the fallback here too.
+  if (options.variant === 'vortex') return buildVortex(options);
+  return buildWaterfall(options);
+}
+
 export function sampleSequence(sequence, t) {
   if (!sequence || !Array.isArray(sequence.items)) return [];
   const time = clamp(finite(t), 0, finite(sequence.duration));
+  const vortex = sequence.variant === 'vortex' ? sequence.geometry : null;
   return sequence.items.map((item) => {
     const tau = time - item.launch;
-    const point = sampleAt(item, tau);
+    const point = vortex ? sampleVortex(item, vortex, tau) : sampleWaterfall(item, tau);
     return {
       id: item.id,
       x: point.x,
       y: point.y,
       alpha: point.alpha,
-      rotation: item.spin || 0,
+      rotation: finite(point.rotation),
     };
   });
 }

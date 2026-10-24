@@ -34,21 +34,27 @@
       </div>
     </div>
   </div>
-  <p id="preview-hint">tap to start &middot; tap during the animation to skip</p>
+  <p id="preview-hint">tap to start · tap during it to skip</p>
   <script type="module">
-    // Local device harness: shows the win celebration without playing a game, so the
-    // floor, safe-area, density and the hand-off to the win card can be judged on an
-    // actual phone. Not part of the app and not in the service worker shell.
-    // Served by `npm start`, opened at /win-preview.html?ms=120 to change the cadence.
-    import { startCelebration, stopCelebration } from './js/celebrate.js';
+    // Local device harness: plays the win celebrations without a game, so the floor,
+    // safe-area, composition and the hand-off to the win card can be judged on an actual
+    // phone. Committed and in the service-worker shell on purpose: it is how every
+    // celebration gets checked on hardware.
+    //
+    // Each tap after the first plays the next celebration in the rotation. Pin one with
+    // /preview.html?v=vortex (also dancer, waterfall), and change the cadence with ?ms=120.
+    import { startCelebration, stopCelebration, CELEBRATIONS } from './js/celebrate.js';
     import { createDeck } from './js/game.js';
 
     const board = document.getElementById('board');
     const canvas = document.getElementById('celebration');
     const card = document.getElementById('preview-card');
     const hint = document.getElementById('preview-hint');
-    const launchMs = Number(new URLSearchParams(location.search).get('ms')) || undefined;
-    const seed = Number(new URLSearchParams(location.search).get('seed')) || 1;
+    const params = new URLSearchParams(location.search);
+    const pinned = CELEBRATIONS.indexOf(params.get('v'));
+    const launchMs = Number(params.get('ms')) || undefined;
+    const seed = Number(params.get('seed')) || 1;
+    let slot = pinned >= 0 ? pinned : 0;
 
     // Same card sizing rule as the real board, so the preview matches play.
     function layout() {
@@ -94,8 +100,11 @@
       const { cw, ch } = layout();
       placePiles();
       card.hidden = true;
-      hint.textContent = 'tap during the animation to skip';
+      const variant = CELEBRATIONS[slot];
+      if (pinned < 0) slot = (slot + 1) % CELEBRATIONS.length;
+      hint.textContent = `${variant} · tap during it to skip`;
       celebration = startCelebration(canvas, {
+        variant,
         cw,
         ch,
         cards,
@@ -110,7 +119,7 @@
         card.style.animation = 'none';
         void card.offsetWidth;
         card.style.animation = ''; // restart the same 300ms fade-in the app uses
-        hint.textContent = 'tap to play it again';
+        hint.textContent = `${variant} · tap to play the next one`;
       });
     }
 
@@ -129,7 +138,7 @@
       }
       stopCelebration();
       card.hidden = true;
-      hint.textContent = 'tap to start · tap during the animation to skip';
+      hint.textContent = 'tap to start · tap during it to skip';
     }
 
     document.getElementById('app').addEventListener('pointerdown', () => {
