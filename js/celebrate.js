@@ -145,9 +145,9 @@ function startCanvasCelebration(canvas, {
   let cardH = ch;
   let sprites = new Map();
 
-  // Only the waterfall leaves trails: its trails are the animation. The vortex, conga and
-  // shuffle are made of distinct overlapping cards, so they clear their frame first or the
-  // shapes smear into a disc, a band or a deck-shaped blur.
+  // Only the waterfall leaves trails: its trails are the animation. The vortex, conga,
+  // shuffle and fan are made of distinct overlapping cards, so they clear their frame first
+  // or the shapes smear into a disc, a band, a blur or a stockade of edges.
   const trails = variant === 'waterfall';
 
   const allCards = cards.length ? cards : piles.flatMap((p) => p.cards || []);
@@ -304,13 +304,13 @@ function hasWebGL() {
 // choreography module: this is a list of *renderers*, and the dispatcher is the only thing
 // that knows about more than one (the dancer has no choreography module of its own).
 //
-// Rules for the order: two wins in a row never show the same celebration, and the two newest
-// ones lead so they are met early. Five slots and one 3D dancer cannot alternate perfectly,
-// so the dancer sits in the middle: two 2D passes, the dancer, then the other two 2D passes.
-// With 'shuffle' leading, the rotation is shuffle -> conga -> dancer -> vortex -> waterfall;
+// Rules for the order: two wins in a row never show the same celebration, and the newest
+// ones lead so they are met early. Six slots and one 3D dancer cannot alternate perfectly,
+// so the dancer sits late: three 2D passes, the dancer, then the other two 2D passes. With
+// 'fan' leading, the rotation is fan -> shuffle -> conga -> dancer -> vortex -> waterfall;
 // every neighbouring pair differs, and if WebGL is missing the dancer drops out and the
 // remaining list still never repeats a neighbour.
-export const CELEBRATIONS = ['shuffle', 'conga', 'dancer', 'vortex', 'waterfall'];
+export const CELEBRATIONS = ['fan', 'shuffle', 'conga', 'dancer', 'vortex', 'waterfall'];
 
 // The list to rotate through on this device. A browser without WebGL cannot play the dancer,
 // and its fallback is the waterfall — so leaving it in the rotation would play the waterfall

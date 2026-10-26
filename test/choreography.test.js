@@ -681,3 +681,291 @@ test('the vortex frames itself on a tablet as well as on a phone', () => {
     }
   }
 });
+
+// ---------- Fan ----------
+const fan = (seed = 7) => build(seed, 'fan');
+
+test('the fan uses all 52 cards exactly once, and says so', () => {
+  const sequence = fan();
+  assert.equal(sequence.variant, 'fan');
+  assert.equal(sequence.items.length, 52);
+  assert.equal(new Set(sequence.items.map((item) => item.id)).size, 52);
+});
+
+test('a fan pass lasts between six and seven and a half seconds', () => {
+  const { duration } = fan();
+  assert.ok(duration >= 6000, `duration ${duration}ms is shorter than 6s`);
+  assert.ok(duration <= 7500, `duration ${duration}ms is longer than 7.5s`);
+});
+
+test('every fan card starts on the stage', () => {
+  const sequence = fan();
+  for (const item of sequence.items) {
+    const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+    assert.ok(card.alpha > 0, `${item.id} is invisible at its launch`);
+    assert.ok(inside(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+  }
+});
+
+test('the fan never returns a NaN and its live cards stay on the stage', () => {
+  const sequence = fan();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const cards = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    assert.equal(cards.size, 52, `sample at ${t}ms lost cards`);
+    for (const item of sequence.items) {
+      const card = cards.get(item.id);
+      assert.ok(Number.isFinite(card.x), `${item.id} x is not finite at ${t}ms`);
+      assert.ok(Number.isFinite(card.y), `${item.id} y is not finite at ${t}ms`);
+      assert.ok(Number.isFinite(card.rotation), `${item.id} rotation is not finite at ${t}ms`);
+      const tau = t - item.launch;
+      // Not launched yet, or already tossed off the top on purpose. Everything before the
+      // exit — the gather, the fan, the fold, the bow — is inside the stage.
+      if (tau <= 0 || t >= item.exit) continue;
+      assert.ok(inside(card), `${item.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
+    }
+  }
+});
+
+test('fan alphas are on or off, never a private fade', () => {
+  const sequence = fan();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    for (const card of sampleSequence(sequence, t)) {
+      assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
+    }
+  }
+});
+
+test('the fan is actually a fan before it folds', () => {
+  const sequence = fan();
+  // Halfway through the breathing window every card has landed and the sway is fully in,
+  // so the pose there is the pose the player judges the shape by.
+  const t = Math.ceil((sequence.geometry.flutterStart + sequence.geometry.foldStart) / 2);
+  const cards = sampleSequence(sequence, t);
+  const rots = cards.map((card) => card.rotation);
+  assert.ok(Math.min(...rots) < -0.4, `nothing fans to the left (min ${Math.min(...rots)})`);
+  assert.ok(Math.max(...rots) > 0.4, `nothing fans to the right (max ${Math.max(...rots)})`);
+  const xs = cards.map((card) => card.x + cw / 2);
+  assert.ok(Math.max(...xs) - Math.min(...xs) > viewport.width * 0.5,
+    `the fan spans only ${(Math.max(...xs) - Math.min(...xs)).toFixed(0)}px`);
+  // The outer cards sit deeper than the inner ones, the way a real hand fan does.
+  const radius = (card) => Math.hypot(card.x + cw / 2 - viewport.width / 2,
+    (viewport.floorY + ch) - (card.y + ch / 2));
+  const rs = cards.map(radius);
+  assert.ok(Math.max(...rs) - Math.min(...rs) > ch * 0.5,
+    `the fan is ${(Math.max(...rs) - Math.min(...rs)).toFixed(0)}px deep, flatter than a hand`);
+});
+
+test('the fan folds into a visible packet, bows, and leaves the board empty', () => {
+  const sequence = fan();
+  // Just before the exits begin the packet is at rest, after its bow. It must still read
+  // as many cards: the regression this guards is closing the fan all the way, where 52
+  // cards at one point drew as a single lone card face.
+  const justBeforeExit = sampleSequence(sequence, sequence.geometry.exitStart - 1);
+  const xs = justBeforeExit.map((card) => card.x);
+  const ys = justBeforeExit.map((card) => card.y);
+  assert.ok(justBeforeExit.every((card) => card.alpha === 1),
+    'a card is not on the packet before the exit');
+  assert.ok(Math.max(...xs) - Math.min(...xs) > cw * 0.35,
+    `the packet spans ${(Math.max(...xs) - Math.min(...xs)).toFixed(1)}px: it reads as one card`);
+  assert.ok(Math.max(...ys) - Math.min(...ys) > ch * 0.25,
+    `the packet is ${(Math.max(...ys) - Math.min(...ys)).toFixed(1)}px tall: it reads as one card`);
+
+  // The bow has to be seen, not assumed: at its peak the packet's rotation must be further
+  // from its resting tilt than the tilt alone. A build that dropped the bow would pass
+  // every other test here.
+  const g = sequence.geometry;
+  const resting = sampleSequence(sequence, Math.ceil(g.bowStart - 1));
+  const peak = sampleSequence(sequence, Math.ceil(g.bowStart + g.bowMs / 2));
+  const tiltOf = (sample) => sample.reduce((sum, card) => sum + card.rotation, 0) / sample.length;
+  assert.ok(Math.abs(tiltOf(peak) - tiltOf(resting)) > Math.abs(g.bowRad) * 0.4,
+    `the packet bowed only ${Math.abs(tiltOf(peak) - tiltOf(resting)).toFixed(3)}rad`);
+
+  const after = sampleSequence(
+    sequence, Math.ceil(sequence.geometry.exitStart + sequence.geometry.exitRipple + sequence.geometry.exitDur),
+  );
+  for (const card of after) {
+    assert.equal(card.alpha, 0, `${card.id} is still on the board after the wave`);
+  }
+  const cards = sampleSequence(sequence, sequence.duration);
+  for (const card of cards) {
+    assert.equal(card.alpha, 0, `${card.id} is still on the board at the end`);
+  }
+});
+
+test('the fan exit is seen, not blinked away', () => {
+  // The packet rests at the bottom of the stage. Exiting downward took it off screen in
+  // about sixty milliseconds, so the whole ending was invisible — found in the browser,
+  // not here, which is why it gets its own test. The flight must both last long enough to
+  // read and travel far enough to clear the stage rather than fade at a floor.
+  const sequence = fan();
+  const g = sequence.geometry;
+  assert.ok(g.exitDur >= 450, `the exit lasts only ${Math.round(g.exitDur)}ms: it cannot be seen`);
+  const frame = 16;
+  for (const item of sequence.items) {
+    let previous = null;
+    for (let t = item.exit; t <= sequence.duration; t += frame) {
+      const card = sampleSequence(sequence, t).find((c) => c.id === item.id);
+      if (previous && previous.alpha > 0 && card.alpha > 0) {
+        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+        assert.ok(moved <= 16, `${item.id} jumped ${moved.toFixed(1)}px at ${t}ms`);
+      }
+      previous = card;
+    }
+    const first = sampleSequence(sequence, item.exit + 1).find((c) => c.id === item.id);
+    const end = sampleSequence(sequence, sequence.duration).find((c) => c.id === item.id);
+    assert.equal(end.alpha, 0, `${item.id} is still on the stage at the end`);
+    // The card leaves through the top, and it is opaque for most of that journey.
+    assert.ok(first.y < item.yFold + 1e-6, `${item.id} did not start rising at its exit`);
+  }
+  // No card may drop out of play while any of it is still on the stage. Checked at the
+  // exact alpha boundary rather than on frame samples: a card is only asked to have cleared
+  // the top by the instant its alpha goes to zero, so frame quantisation must not decide it.
+  for (const item of sequence.items) {
+    const boundary = item.exit + g.exitDur - 1e-6;
+    const last = sampleSequence(sequence, boundary).find((c) => c.id === item.id);
+    assert.equal(last.alpha, 1, `${item.id} is already gone at its own alpha boundary`);
+    const bottom = last.y + ch / 2 + (Math.abs(Math.sin(last.rotation)) * cw
+      + Math.abs(Math.cos(last.rotation)) * ch) / 2;
+    assert.ok(bottom <= 0.6,
+      `${item.id} vanished with ${bottom.toFixed(1)}px of itself still on the stage`);
+  }
+  // Halfway through the flight the stage must still show a good share of the packet: that
+  // is what the eye reads as a ribbon of cards. Counting alpha alone would not catch the
+  // defect, because a card is still opaque while it is already past the edge — so this
+  // counts cards that are both live and inside the stage.
+  const midway = sampleSequence(sequence, Math.ceil(g.exitStart + g.exitDur / 2));
+  assert.ok(midway.filter((card) => card.alpha > 0 && inside(card)).length >= 26,
+    'the packet has left the stage less than halfway through its own exit');
+});
+
+test('the fan never teleports: 16ms never moves a live card 16px, or spins it 6 degrees', () => {
+  // Rotation is checked as well as position: the fold-to-bow hand-over once swapped the
+  // packet's tilt for zero in one frame, which is invisible to a distance-only test.
+  const sequence = fan();
+  const frame = 16;
+  for (let t = 0; t + frame <= sequence.duration; t += 25) {
+    const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const card of sampleSequence(sequence, t + frame)) {
+      const previous = before.get(card.id);
+      if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+      const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+      assert.ok(moved <= 16, `${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+      // Legitimate motion peaks at about 3 degrees a frame, dominated by the fold turning
+      // each card from its fan angle to the packet's, with the sway and the bow on top. Six
+      // is a real limit with room, and it catches the 10-degree single-frame flip the
+      // fold-to-packet hand-over used to produce.
+      const spun = Math.abs(card.rotation - previous.rotation);
+      assert.ok(spun <= (6 * Math.PI) / 180,
+        `${card.id} spun ${((spun * 180) / Math.PI).toFixed(1)} degrees in 16ms at ${t}ms`);
+    }
+  }
+});
+
+test('the fan frames itself from a 320px phone to a very wide stage, without a jump', () => {
+  // The spread is solved against the stage, so a short little 320x240 window and a 2400px
+  // wide tablet both need the full sweep — the solved spread may narrow, a card's rotated
+  // corner may not leave the stage, and the per-frame step is measured against the same
+  // 16px every other path is held to.
+  const stages = [
+    { name: 'smallest phone', width: 320, height: 568, cw: 42, ch: 59 },
+    { name: 'phone', width: 393, height: 852, cw: 48, ch: 67 },
+    { name: 'short window', width: 320, height: 240, cw: 30, ch: 42 },
+    { name: 'iPad', width: 1024, height: 768, cw: 105, ch: 147 },
+    { name: 'iPad Pro landscape', width: 1366, height: 1024, cw: 130, ch: 182 },
+    { name: 'very wide', width: 2400, height: 1080, cw: 160, ch: 224 },
+  ];
+  for (const stage of stages) {
+    const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+    const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+      x: 12 + i * (stage.cw + 6),
+      y: 8, // the foundation row, near the top of the stage
+      cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+    }));
+    const view = {
+      width: stage.width,
+      height: stage.height,
+      left: 0,
+      top: 0,
+      floorY: stage.height - 34 - stage.ch,
+    };
+    const sequence = buildWinSequence({
+      variant: 'fan', cards, piles, cw: stage.cw, ch: stage.ch, viewport: view, seed: 9,
+    });
+    const bounds = {
+      width: stage.width,
+      top: 0,
+      bottom: view.floorY + stage.ch,
+      cw: stage.cw,
+      ch: stage.ch,
+    };
+
+    for (const item of sequence.items) {
+      const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+      assert.ok(card.alpha > 0 && inside(card, bounds),
+        `${stage.name}: ${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+    }
+
+    for (let t = 0; t <= sequence.duration; t += 25) {
+      const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const item of sequence.items) {
+        const tau = t - item.launch;
+        if (tau <= 0 || t >= item.exit) continue;
+        const card = byId.get(item.id);
+        assert.ok(inside(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
+      }
+    }
+
+    const frame = 16;
+    for (let t = 0; t + frame <= sequence.duration; t += 50) {
+      const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const card of sampleSequence(sequence, t + frame)) {
+        const previous = before.get(card.id);
+        if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+        assert.ok(moved <= 16,
+          `${stage.name}: ${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+      }
+    }
+
+    assert.equal(sampleSequence(sequence, sequence.duration).filter((c) => c.alpha > 0).length, 0,
+      `${stage.name}: the board is not empty at the end`);
+    assert.ok(sequence.duration >= 6000, `${stage.name}: duration ${sequence.duration}ms is under 6s`);
+    assert.ok(sequence.duration <= 7500, `${stage.name}: duration ${sequence.duration}ms is over 7.5s`);
+  }
+});
+
+test('the fan stays under the notch, not just above the home indicator', () => {
+  const notch = 59;
+  const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+  const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+    x: 12 + i * (cw + 6),
+    y: notch + 8,
+    cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+  }));
+  const view = { ...viewport, top: 0, topInset: notch };
+  const sequence = buildWinSequence({
+    variant: 'fan', cards, piles, cw, ch, viewport: view, seed: 4,
+  });
+  const bounds = { ...phoneStage, top: notch };
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const item of sequence.items) {
+      const tau = t - item.launch;
+      if (tau <= 0 || t >= item.exit) continue;
+      const card = byId.get(item.id);
+      assert.ok(inside(card, bounds),
+        `${item.id} crosses the notch at ${t}ms (y=${card.y.toFixed(1)})`);
+    }
+  }
+});
+
+test('a fan seed is repeatable, and a different seed is a different pass', () => {
+  // The slot on the fan is fixed by the shuffle permutation, so the seed only jitters where
+  // each card starts at its foundation — which sizes its spring and therefore its timing.
+  // The same win must still look the same twice.
+  const a = fan(11);
+  const b = fan(11);
+  assert.deepEqual(a.items, b.items);
+  assert.deepEqual(sampleSequence(a, 1234), sampleSequence(b, 1234));
+  assert.notDeepEqual(fan(12).items, a.items);
+});

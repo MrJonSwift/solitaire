@@ -1,11 +1,12 @@
 // Pure choreography for win celebrations. Builds one sequence from card and viewport data,
 // then samples it at a time. No DOM, no canvas, no timers: Node can prove the shape of a win.
 //
-// Four 2D paths live here and share the seam. `waterfall` is the shipped cascade, which
+// Five 2D paths live here and share the seam. `waterfall` is the shipped cascade, which
 // leaves trails and lets every card fall off the sides. `vortex` unwinds the four foundations
 // into one funnel and bursts. `conga` turns the cards into a queue that files round the stage
 // and off through a gap. `shuffle` tidies them into a deck, riffles it, squares it up and
-// slides it away. The renderer draws whichever it is handed.
+// slides it away. `fan` gathers all 52 into one cardsharp's spread, breathes in it, snaps it
+// closed into a deck, bows and flicks off. The renderer draws whichever it is handed.
 import { seededRandom } from './game.js';
 
 // The one taste knob for density. 52 cards at 120ms is a 6.12s launch window.
@@ -867,6 +868,327 @@ function sampleShuffle(item, geometry, tau) {
   };
 }
 
+// ---------- Fan (the flourish) ----------
+// The cardsharp ending. All 52 cards gather into one big fan held at the bottom of the
+// stage — the classic spread — breathe in it for a beat, fold into a neat half-closed
+// packet, bow to the player, then be tossed up off the top of the stage as a ribbon. The
+// silhouette is an arc
+// of cards radiating from one pivot, which none of the other five produces; there is no
+// scatter, no queue and no funnel to lean on.
+//
+// The fold deliberately stops at a small spread rather than a single deck pose: 52 cards at
+// one point draw as one card face, so closing all the way would make the fan visibly
+// vanish into a lone card. The held packet keeps the cards overlapping and distinct, which
+// is the difference between closing a fan and erasing it.
+//
+// The spread is solved, not designed: the pivot sits at the bottom edge of the resting
+// band, and every slot angle is checked against the card's own rotated extent against the
+// notch on the top and the stage sides, so the pass is bisected down from the design spread
+// only when a stage cannot hold it. On a phone the fan is lower and wider; on a very wide
+// stage the design spread already fits and nothing is given up.
+const FAN_SPREAD_MAX = 1.15;      // the design spread, about 132 degrees overall
+const FAN_SPREAD_MIN = 0.35;      // the narrowest the solver may leave it
+const FAN_DEEP = 2.6;             // deepest slot, as a fraction of card height (to allow small cards)
+const FAN_SHALLOW = 1.35;         // shallowest slot. Real fans hold the outer cards deeper,
+                                  // which is also what keeps the inner cards clear of the
+                                  // bottom edge when they tip wide.
+const FAN_FOLD_SPREAD = 0.35;     // rad the folded packet still holds open, about 20 degrees
+const FAN_STAGGER_MS = 14;        // one card leaves its foundation every 14ms
+const FAN_GATHER_RATE = 1.55;     // ms of spring per px of gap, as the shuffle's gather:
+                                  // smoothstep peaks at 1.5x the average speed and that is
+                                  // the frame budget, so the rate is deliberately the cap.
+const FAN_GATHER_MIN_MS = 500;
+const FAN_SETTLE_MIN_MS = 3600;   // the earliest the fold may begin, whatever the stage
+const FAN_SETTLE_GAP_MS = 300;    // rest once every card is home before anything moves
+const FAN_FLUTTER_MS = 1400;      // the breathing window, ending as the fold begins
+const FAN_FLUTTER_RAMP_MS = 250;  // the sway eases in, so the fan never jumps
+const FAN_FLUTTER_LAND_MS = 300;  // a card only sways once it has landed in its slot
+const FAN_FLUTTER_WOBBLE = 0.022; // rad a card sways either way, about 1.3 degrees
+const FAN_FLUTTER_PERIOD_MS = 900; // one sway cycle. Slower than the fold that follows it,
+                                  // so the fan reads as held rather than as already leaving.
+const FAN_RIPPLE_TURNS = 0.5;     // half a sway wavelength end to end, so it travels
+const FAN_RIPPLE_MS = 240;        // the fold runs left to right down the fan (u is the slot
+                                  // position), so the fan collapses like a hand closing.
+const FAN_CLOSE_RATE = 1.9;       // ms of fold per px of slot travel. The sine ease peaks
+                                  // at 1.57x the average speed and the sweep's arc runs a
+                                  // sixth longer than its chord, so this rate is the frame
+                                  // budget; shorter would break it on the widest stage.
+const FAN_CLOSE_MIN_MS = 450;
+const FAN_SNAP_HOLD_MS = 200;     // the folded packet sits before it bows
+const FAN_BOW_MS = 800;
+const FAN_BOW_RAD = 0.16;         // about 9 degrees: a nod, not a flop
+const FAN_EXIT_HOLD_MS = 300;
+const FAN_EXIT_SPEED = 0.78;      // px per ms: a toss the eye can follow, not a blur, and
+                                  // fast enough that the widest stage still ends inside the
+                                  // pass's band.
+const FAN_EXIT_UX = 0.12;         // up, a shade to the right. Up, not down: the packet
+const FAN_EXIT_UY = -0.99278;     // rests on the floor, so a downward exit leaves the stage
+                                  // in about sixty milliseconds and the beat is never seen.
+                                  // Rising gives it the full height of the stage to read, and
+                                  // the small lean keeps it leaving through the top edge
+                                  // rather than the corner.
+                                  // The pair is a unit vector (0.0144 + 0.9856 = 1), which is
+                                  // what makes exitDur a true flight length.
+const FAN_EXIT_MIN_MS = 350;
+const FAN_EXIT_SPIN = -0.3;       // rad by the end of the flight: the packet tips as it goes
+const FAN_EXIT_RIPPLE_MS = 140;   // the packet unravels upward in a short wave
+
+const sineInOut = (u) => 0.5 - 0.5 * Math.cos(Math.PI * clamp(u, 0, 1));
+
+// What the stage allows at one slot angle: the shallowest radius (the card's own lowest
+// corner stays above the resting band's bottom edge) and the caps the notch and the sides
+// put on the deepest. All extents are measured from the rotated card, so the bow, the sway
+// and a tablet's wider cards are all counted, never assumed away.
+function fanRadiusBounds(theta, view) {
+  const s = Math.abs(Math.sin(theta));
+  const c = Math.max(0.2, Math.abs(Math.cos(theta)));
+  const floor = (4 + (view.cw / 2) * s + (view.ch / 2) * c) / c;
+  const top = (view.bottom - view.topInset - 4 - (view.cw / 2) * s - (view.ch / 2) * c) / c;
+  const side = Math.abs(Math.sin(theta)) < 0.05
+    ? Infinity
+    : (view.width / 2 - 6 - (view.cw / 2) * c - (view.ch / 2) * s) / Math.abs(Math.sin(theta));
+  return { floor, top, side };
+}
+
+// Find the widest spread the stage can hold, the outer card being the binding one: every
+// inner slot has a smaller angle and therefore a roomier window.
+function fanSpread(view, wobble) {
+  const feasible = (spread) => {
+    const deep = fanRadiusBounds(spread + wobble, view);
+    const eager = fanRadiusBounds(Math.max(0, spread - wobble), view);
+    const cap = Math.min(deep.top, deep.side, eager.top, eager.side);
+    return cap >= deep.floor + 2;
+  };
+  // A stage too small for even the narrowest fan still gets one: the per-card clamp below
+  // then resolves to the stage's own window, keeping the card on the stage rather than
+  // pretending a wider spread fits.
+  if (feasible(FAN_SPREAD_MAX)) return FAN_SPREAD_MAX;
+  if (!feasible(FAN_SPREAD_MIN)) return FAN_SPREAD_MIN;
+  let lo = FAN_SPREAD_MIN;
+  let hi = FAN_SPREAD_MAX;
+  for (let i = 0; i < 24; i++) {
+    const mid = (lo + hi) / 2;
+    if (feasible(mid)) lo = mid; else hi = mid;
+  }
+  return lo;
+}
+
+function buildFan({
+  cards = [],
+  piles = [],
+  cw = 0,
+  ch = 0,
+  viewport = {},
+  seed = 1,
+} = {}) {
+  const width = Math.max(0, finite(viewport.width));
+  const height = Math.max(0, finite(viewport.height));
+  const cardWidth = Math.max(0, finite(cw));
+  const cardHeight = Math.max(0, finite(ch));
+  const left = finite(viewport.left);
+  const top = finite(viewport.top);
+  const bottomInset = Math.max(0, finite(viewport.bottomInset));
+  const floorY = Number.isFinite(viewport.floorY)
+    ? clamp(viewport.floorY, 0, height)
+    : Math.max(0, height - bottomInset - cardHeight);
+  const topInset = Math.max(0, finite(viewport.topInset, finite(viewport.top)));
+  const rng = seededRandom(seed);
+  const ordered = launchOrder(cards, piles);
+
+  const half = Math.hypot(cardWidth, cardHeight) / 2;
+  const pivotY = floorY + cardHeight; // the bottom edge of the resting band
+  const cx = width / 2;
+  const view = { bottom: pivotY, topInset, width, cw: cardWidth, ch: cardHeight };
+  const spread = fanSpread(view, FAN_FLUTTER_WOBBLE);
+
+  const count = Math.max(1, ordered.length);
+
+  // The folded packet sits just above the pivot, a shallow arc the fan squashes into: the
+  // base keeps the packet's lowest card clear of the bottom edge, the shallow slot keeps
+  // its arc in family with the fan it came from.
+  const packetBase = Math.max(cardHeight / 2 + 8, cardHeight * 0.55);
+  const shallow = Math.max(packetBase + cardHeight * 0.4, cardHeight * FAN_SHALLOW);
+  const deep = cardHeight * FAN_DEEP;
+
+  // Launch order is rank-major, so it would paint the same colour four times in a row along
+  // the fan. This permutation spreads each suit about the arc and still uses every slot
+  // exactly once: seven and a count of 52 share no factor.
+  const slotOf = (index) => (index * 7) % count;
+
+  const items = ordered.map(({ card, pile }, index) => {
+    const origin = piles[pile] || {};
+    // Same clamped scatter as the other paths: nothing may start off the stage or under
+    // the notch, on a phone or on a tablet whose foundations reach nearly to an edge.
+    const ox = clamp(finite(origin.x) - left + (rng() - 0.5) * cardWidth * 0.3, 0, Math.max(0, width - cardWidth));
+    const oy = clamp(
+      finite(origin.y) - top + (rng() - 0.5) * cardHeight * 0.3,
+      Math.min(topInset, height - cardHeight),
+      Math.max(0, height - cardHeight),
+    );
+
+    const u = count > 1 ? slotOf(index) / (count - 1) : 0.5;
+    const theta = (u * 2 - 1) * spread;
+    // The slot radius: deep for the outer cards, then clamped into what this very angle's
+    // sway-safe window allows.
+    const deepPose = fanRadiusBounds(theta + FAN_FLUTTER_WOBBLE, view);
+    const shallowPose = fanRadiusBounds(theta - FAN_FLUTTER_WOBBLE, view);
+    const cap = Math.min(deepPose.top, deepPose.side, shallowPose.top, shallowPose.side);
+    const floor = Math.max(deepPose.floor, shallowPose.floor);
+    const d = clamp(shallow + (deep - shallow) * u, floor, cap);
+
+    const thetaFold = (u - 0.5) * FAN_FOLD_SPREAD;
+    // The folded packet keeps a shallow arc: the outer cards end up in front at a radius
+    // near the fan's own shallow slot, so the fold is a squashing, not a teleport.
+    const dFold = packetBase + (shallow - packetBase) * (0.4 + 0.6 * u);
+    const xFold = cx + Math.sin(thetaFold) * dFold - cardWidth / 2;
+    const yFold = pivotY - Math.cos(thetaFold) * dFold - cardHeight / 2;
+
+    const x = cx + Math.sin(theta) * d - cardWidth / 2;
+    const y = pivotY - Math.cos(theta) * d - cardHeight / 2;
+
+    const distance = Math.hypot(x - ox, y - oy);
+    const gather = Math.max(FAN_GATHER_MIN_MS, distance * FAN_GATHER_RATE);
+    const launch = index * FAN_STAGGER_MS;
+    return {
+      id: card.id || card.suit + card.rank,
+      suit: card.suit,
+      rank: card.rank,
+      pile,
+      launch,
+      gather,
+      gatherEnd: launch + gather,
+      u,
+      theta,
+      d,
+      thetaFold,
+      dFold,
+      x,
+      y,
+      xFold,
+      yFold,
+      foldDelay: u * FAN_RIPPLE_MS,
+      foldMs: Math.max(FAN_CLOSE_MIN_MS, Math.ceil(Math.hypot(xFold - x, yFold - y) * FAN_CLOSE_RATE)),
+      ox,
+      oy,
+    };
+  });
+
+  const maxLanded = items.reduce((max, item) => Math.max(max, item.gatherEnd), 0);
+  const foldStart = Math.max(FAN_SETTLE_MIN_MS, Math.ceil(maxLanded + FAN_SETTLE_GAP_MS));
+  const foldEnd = items.reduce(
+    (max, item) => Math.max(max, foldStart + item.foldDelay + item.foldMs),
+    foldStart,
+  );
+  const bowStart = foldEnd + FAN_SNAP_HOLD_MS;
+  const exitStart = bowStart + FAN_BOW_MS + FAN_EXIT_HOLD_MS;
+  // Up, past the top edge of the stage, one short wave. The packet rests on the floor, so
+  // the flight is set by the card furthest from the top edge — the lowest in the packet —
+  // because it needs the most travel to clear it: its centre plus a corner radius, which
+  // covers the tip the flight adds. Using the highest card instead would drop alpha on
+  // cards that still had a sliver on screen.
+  const packetTop = Math.max(...items.map((item) => item.yFold));
+  const clearance = packetTop + cardHeight / 2 + half;
+  const exitDur = Math.max(FAN_EXIT_MIN_MS, clearance / (FAN_EXIT_SPEED * Math.abs(FAN_EXIT_UY)));
+  // The wave runs across the packet from left to right, the way it folded: each card's exit
+  // is its own absolute time, so the sampler and the tests share one number for "on the
+  // stage" versus "flicked away". Every card flies the same length, set by the highest one.
+  items.forEach((item) => {
+    item.exit = exitStart + item.u * FAN_EXIT_RIPPLE_MS;
+  });
+  const duration = Math.ceil(exitStart + FAN_EXIT_RIPPLE_MS + exitDur);
+
+  return {
+    variant: 'fan',
+    duration,
+    viewport: { width, height, floorY },
+    geometry: {
+      width,
+      height,
+      pivotY,
+      cx,
+      cw: cardWidth,
+      ch: cardHeight,
+      spread,
+      foldStart,
+      flutterStart: foldStart - FAN_FLUTTER_MS,
+      bowStart,
+      bowMs: FAN_BOW_MS,
+      bowRad: FAN_BOW_RAD,
+      exitStart,
+      exitRipple: FAN_EXIT_RIPPLE_MS,
+      exitDur,
+    },
+    items,
+  };
+}
+
+// The breathing: each card sways about its slot angle, the wave running along the fan, and
+// only once it has landed and only inside the flutter window, easing in from stillness.
+function fanSway(item, geometry, t) {
+  const ramp = smoothstep((t - geometry.flutterStart) / FAN_FLUTTER_RAMP_MS)
+    * smoothstep((t - item.gatherEnd) / FAN_FLUTTER_LAND_MS);
+  const wave = Math.sin(TAU * (t / FAN_FLUTTER_PERIOD_MS + item.u * FAN_RIPPLE_TURNS));
+  return FAN_FLUTTER_WOBBLE * ramp * wave;
+}
+
+function sampleFan(item, geometry, tau) {
+  if (tau <= 0) return { x: item.ox, y: item.oy, alpha: 0, rotation: 0 };
+  const t = tau + item.launch;
+  const settled = geometry.foldStart + item.foldDelay + item.foldMs;
+
+  if (t < item.gatherEnd) {
+    // The spring from the pile into the slot, sized from distance like every other path.
+    const s = smoothstep(tau / item.gather);
+    return {
+      x: item.ox + (item.x - item.ox) * s,
+      y: item.oy + (item.y - item.oy) * s,
+      alpha: 1,
+      rotation: item.theta * s,
+    };
+  }
+
+  if (t < settled) {
+    // Hold in the slot, breathe once the flutter window opens, then fold. One expression
+    // covers all three: the fold ease and the sway envelope both start from zero, so the
+    // hand-overs are continuous by construction rather than by a patch.
+    const e = sineInOut((t - geometry.foldStart - item.foldDelay) / item.foldMs);
+    const theta = item.theta + (item.thetaFold - item.theta) * e;
+    const d = item.d + (item.dFold - item.d) * e;
+    return {
+      x: geometry.cx + Math.sin(theta) * d - geometry.cw / 2,
+      y: geometry.pivotY - Math.cos(theta) * d - geometry.ch / 2,
+      alpha: 1,
+      rotation: theta + fanSway(item, geometry, t) * (1 - e),
+    };
+  }
+
+  // The folded packet: sit through the snap hold, bow once, all cards together, sit again,
+  // then flick away in a wave. The bow starts from the packet's own tilt and ends at zero,
+  // and the wave starts from zero, so no hand-over here has anything to jump over.
+  if (t < item.exit) {
+    const bow = Math.sin(Math.PI * clamp((t - geometry.bowStart) / geometry.bowMs, 0, 1));
+    return {
+      x: item.xFold,
+      y: item.yFold,
+      alpha: 1,
+      rotation: item.thetaFold + geometry.bowRad * bow,
+    };
+  }
+
+  const bt = t - item.exit;
+  if (bt >= geometry.exitDur) {
+    return { x: item.xFold, y: item.yFold, alpha: 0, rotation: FAN_EXIT_SPIN };
+  }
+  const f2 = bt / geometry.exitDur;
+  return {
+    x: item.xFold + FAN_EXIT_UX * FAN_EXIT_SPEED * bt,
+    y: item.yFold + FAN_EXIT_UY * FAN_EXIT_SPEED * bt,
+    alpha: 1,
+    // The card's tilt settles into the flick's spin across the flight, never mid-air.
+    rotation: item.thetaFold + (FAN_EXIT_SPIN - item.thetaFold) * f2,
+  };
+}
+
 // ---------- The seam ----------
 
 // One sampler per path: a new path is a line here rather than another branch in the loop.
@@ -875,11 +1197,13 @@ const SAMPLERS = {
   vortex: (item, tau, geometry) => sampleVortex(item, geometry, tau),
   conga: (item, tau, geometry) => sampleConga(item, geometry, tau),
   shuffle: (item, tau, geometry) => sampleShuffle(item, geometry, tau),
+  fan: (item, tau, geometry) => sampleFan(item, geometry, tau),
 };
 
 export function buildWinSequence(options = {}) {
   // An unknown name is a coding mistake, not a reason to leave a win uncelebrated: the
   // waterfall is the fallback everywhere else, so it is the fallback here too.
+  if (options.variant === 'fan') return buildFan(options);
   if (options.variant === 'shuffle') return buildShuffle(options);
   if (options.variant === 'conga') return buildConga(options);
   if (options.variant === 'vortex') return buildVortex(options);
