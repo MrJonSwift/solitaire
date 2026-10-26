@@ -19,7 +19,6 @@ const board = document.getElementById('board');
 const toolbar = document.getElementById('toolbar');
 const btnNew = document.getElementById('btn-new');
 const btnUndo = document.getElementById('btn-undo');
-const btnDraw = document.getElementById('btn-draw');
 const btnHand = document.getElementById('btn-hand');
 const btnAuto = document.getElementById('btn-auto');
 const canvas = document.getElementById('celebration');
@@ -213,15 +212,13 @@ function render({ animate = true } = {}) {
 }
 
 function updateToolbar() {
-  btnDraw.querySelector('.num').textContent = settings.drawCount;
-  btnDraw.setAttribute('aria-label', `Draw ${settings.drawCount} (tap to change)`);
   const lefty = settings.hand === 'left';
   btnHand.classList.toggle('left', lefty);
   btnHand.querySelector('.badge').textContent = lefty ? 'L' : 'R';
   btnHand.setAttribute('aria-label', `${lefty ? 'Left' : 'Right'}-handed layout (tap to switch)`);
   toolbar.classList.toggle('lefty', lefty); // mirror the button order so Undo stays by your thumb
   btnAuto.hidden = state.won || !allTableauFaceUp(state);
-  [btnNew, btnDraw, btnHand, btnAuto].forEach((b) => { b.disabled = busy; });
+  [btnNew, btnHand, btnAuto].forEach((b) => { b.disabled = busy; });
   btnUndo.disabled = busy || state.won || history.length === 0;
 }
 
@@ -368,6 +365,10 @@ function requestNewDeal() {
   else dealNew();
 }
 
+// Unused since the draw-count button left the toolbar: nobody switched to draw 3 often enough
+// to justify a control that could end a game by accident. The rule is untouched, so a game
+// saved as draw 3 still deals and draws that way. Putting the button back in the markup and a
+// listener on it here is the whole reinstatement.
 function toggleDraw() {
   if (busy) return;
   const next = settings.drawCount === 1 ? 3 : 1;
@@ -510,7 +511,6 @@ document.addEventListener('dblclick', (e) => e.preventDefault());
 
 btnNew.addEventListener('click', requestNewDeal);
 btnUndo.addEventListener('click', undo);
-btnDraw.addEventListener('click', toggleDraw);
 btnHand.addEventListener('click', toggleHand);
 btnAuto.addEventListener('click', () => { if (!busy) runAutoComplete(); });
 
