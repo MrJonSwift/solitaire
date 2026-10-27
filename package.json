@@ -4,7 +4,7 @@
   "type": "module",
   "scripts": {
     "start": "node scripts/serve.js",
-    "check": "node --check js/app.js && node --check js/game.js && node --check js/celebrate.js && node --check js/celebration-rotation.js && node --check js/choreography.js && node --check js/celebration-geometry.js && node --check js/celebration-stage.js && node --check js/dancer.js && node --check js/dancer-cards.js && node --check js/dancer-figure.js && node --check js/dancer-motion.js && node --check vendor/three.module.js && node --check scripts/serve.js && node --check sw.js",
+    "check": "node --check js/app.js && node --check js/game.js && node --check js/hints.js && node --check js/hint-copy.js && node --check js/celebrate.js && node --check js/celebration-rotation.js && node --check js/choreography.js && node --check js/celebration-geometry.js && node --check js/celebration-stage.js && node --check js/dancer.js && node --check js/dancer-cards.js && node --check js/dancer-figure.js && node --check js/dancer-motion.js && node --check vendor/three.module.js && node --check scripts/serve.js && node --check sw.js",
     "test": "node --test"
   }
 }

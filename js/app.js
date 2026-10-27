@@ -5,6 +5,8 @@ import {
 } from './game.js';
 import { startCelebration, stopCelebration, availableCelebrations } from './celebrate.js';
 import { resolveIndex, nextVariant } from './celebration-rotation.js';
+import { findHint } from './hints.js';
+import { hintSentence } from './hint-copy.js';
 
 // The winning line-up for this device, decided once: a phone without WebGL should not offer
 // a slot to an animation it cannot play. See availableCelebrations.
@@ -19,9 +21,10 @@ const board = document.getElementById('board');
 const toolbar = document.getElementById('toolbar');
 const btnNew = document.getElementById('btn-new');
 const btnUndo = document.getElementById('btn-undo');
-const btnDraw = document.getElementById('btn-draw');
 const btnHand = document.getElementById('btn-hand');
 const btnAuto = document.getElementById('btn-auto');
+const btnHint = document.getElementById('btn-hint');
+const hintStatus = document.getElementById('hint-status');
 const canvas = document.getElementById('celebration');
 const modal = document.getElementById('modal');
 
@@ -62,6 +65,8 @@ let current = { pos: new Map(), locs: new Map() };
 let drag = null;
 let busy = false; // true while auto-complete is animating
 let winRun = 0; // invalidates the win hand-off when a new deal starts mid-celebration
+let hintEls = []; // every element a hint has marked, so clearing un-marks exactly those
+let hintTimer = 0; // the 2.4s dismissal; never persisted, a hint is not part of the game
 
 // ---------- DOM setup ----------
 function makeSlot(cls, label = '') {
@@ -213,15 +218,14 @@ function render({ animate = true } = {}) {
 }
 
 function updateToolbar() {
-  btnDraw.querySelector('.num').textContent = settings.drawCount;
-  btnDraw.setAttribute('aria-label', `Draw ${settings.drawCount} (tap to change)`);
   const lefty = settings.hand === 'left';
   btnHand.classList.toggle('left', lefty);
   btnHand.querySelector('.badge').textContent = lefty ? 'L' : 'R';
   btnHand.setAttribute('aria-label', `${lefty ? 'Left' : 'Right'}-handed layout (tap to switch)`);
   toolbar.classList.toggle('lefty', lefty); // mirror the button order so Undo stays by your thumb
   btnAuto.hidden = state.won || !allTableauFaceUp(state);
-  [btnNew, btnDraw, btnHand, btnAuto].forEach((b) => { b.disabled = busy; });
+  [btnNew, btnHand, btnAuto].forEach((b) => { b.disabled = busy; });
+  btnHint.disabled = busy || state.won;
   btnUndo.disabled = busy || state.won || history.length === 0;
 }
 
@@ -260,6 +264,7 @@ function act(change) {
 
 function undo() {
   if (busy || drag || state.won || !history.length) return;
+  clearHint();
   const prev = popUndo(history);
   if (prev) state = prev;
   saveGame();
@@ -267,6 +272,7 @@ function undo() {
 }
 
 function afterMove() {
+  clearHint();
   saveGame();
   render();
   if (state.won) { onWin(); return; }
@@ -317,6 +323,7 @@ function takeCelebration() {
 }
 
 async function onWin({ celebrate = true } = {}) {
+  clearHint();
   const run = ++winRun;
   if (celebrate) await sleep(400);
   if (run !== winRun || !state.won) return;
@@ -347,6 +354,7 @@ async function onWin({ celebrate = true } = {}) {
 }
 
 function dealNew() {
+  clearHint();
   winRun++;
   stopCelebration();
   hideModal();
@@ -368,6 +376,10 @@ function requestNewDeal() {
   else dealNew();
 }
 
+// Unused since the draw-count button left the toolbar: nobody switched to draw 3 often enough
+// to justify a control that could end a game by accident. The rule is untouched, so a game
+// saved as draw 3 still deals and draws that way. Putting the button back in the markup and a
+// listener on it here is the whole reinstatement.
 function toggleDraw() {
   if (busy) return;
   const next = settings.drawCount === 1 ? 3 : 1;
@@ -398,13 +410,72 @@ function shake(els) {
     el.classList.remove('shake');
     void el.offsetWidth;
     el.classList.add('shake');
-    el.addEventListener('animationend', () => el.classList.remove('shake'), { once: true });
+    // Reduced motion swaps the button's shake for a still ring, so animationend never arrives
+    // to take the class off. The timer is the guarantee it comes off either way.
+    const done = () => {
+      el.classList.remove('shake');
+      el.removeEventListener('animationend', done);
+      clearTimeout(el._shakeTimer);
+    };
+    el.addEventListener('animationend', done, { once: true });
+    clearTimeout(el._shakeTimer);
+    el._shakeTimer = setTimeout(done, 400);
   }
+}
+
+// ---------- Hint ----------
+// A hint is advice, not a move: it marks elements in the DOM and never touches the game. Clearing
+// is therefore just un-marking what was marked, which is why every element is remembered.
+function clearHint() {
+  clearTimeout(hintTimer);
+  hintTimer = 0;
+  for (const el of hintEls) el.classList.remove('hint-source', 'hint-target');
+  hintEls = [];
+  hintStatus.textContent = '';
+}
+
+function markHint(el, cls) {
+  if (!el) return;
+  el.classList.add(cls);
+  hintEls.push(el);
+}
+
+// A slot under a pile is invisible, so an occupied pile is marked on its top card instead.
+// This is the easiest thing in the feature to get wrong, and the reason it has its own helper.
+function pileTopEl(pile) {
+  const top = pile[pile.length - 1];
+  return top ? cardEls.get(top.id) : null;
+}
+
+function hintTargetEl(to) {
+  if (to.type === 'foundation') return pileTopEl(state.foundations[to.index]) || slots.foundations[to.index];
+  if (to.type === 'tableau') return pileTopEl(state.tableau[to.index]) || slots.tableau[to.index];
+  return null;
+}
+
+function showHint() {
+  if (busy || drag || state.won || !modal.hidden) return;
+  clearHint(); // a second press replaces the first hint instead of stacking outlines
+  const hint = findHint(state);
+  if (hint.kind === 'move') {
+    for (const id of hint.cardIds) markHint(cardEls.get(id), 'hint-source');
+    markHint(hintTargetEl(hint.to), 'hint-target');
+  } else if (hint.kind === 'draw') {
+    // The stock slot is what the hint points at; the top card carries the same glow on top of
+    // it, because the slot itself is covered whenever there is still a card to turn over.
+    markHint(slots.stock, 'hint-target');
+    markHint(pileTopEl(state.stock), 'hint-target');
+  } else {
+    shake([btnHint]); // no dialogs, no toasts: a stuck player is told with the same gesture as a bad tap
+  }
+  hintStatus.textContent = hintSentence(hint, state);
+  hintTimer = setTimeout(clearHint, 2400);
 }
 
 function onPointerDown(e) {
   if (busy || drag || !e.isPrimary || !modal.hidden) return;
   if (e.pointerType === 'mouse' && e.button !== 0) return;
+  clearHint(); // touching the table means the player is moving on, so the advice steps aside
   e.preventDefault();
   const cardEl = e.target.closest('.card');
   let loc = cardEl ? current.locs.get(cardEl.dataset.id) : null;
@@ -510,9 +581,9 @@ document.addEventListener('dblclick', (e) => e.preventDefault());
 
 btnNew.addEventListener('click', requestNewDeal);
 btnUndo.addEventListener('click', undo);
-btnDraw.addEventListener('click', toggleDraw);
 btnHand.addEventListener('click', toggleHand);
 btnAuto.addEventListener('click', () => { if (!busy) runAutoComplete(); });
+btnHint.addEventListener('click', showHint);
 
 // iOS can kill a backgrounded home-screen app without warning, so save whenever we're hidden too.
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') saveGame(); });
