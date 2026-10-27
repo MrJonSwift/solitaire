@@ -38,7 +38,9 @@ function moveSentence(hint, state) {
   const name = cardName(card);
   const onto = destinationPhrase(state, hint.to);
   switch (hint.because) {
-    case 'foundation': return `${name} to the foundation.`;
+    // Four foundations share one name, so the suit says which one; the card's suit and the
+    // foundation's suit are always the same, which keeps the words independent of the index.
+    case 'foundation': return `${name} to the ${SUIT_NAMES[card.suit]} foundation.`;
     case 'reveal': return `${name} onto ${onto}, revealing a card.`;
     // This token is a column being emptied by a move onto a pile that already has cards, so the
     // destination is named like any other build and the gain is spoken instead of the location.

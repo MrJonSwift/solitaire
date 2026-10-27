@@ -13,10 +13,31 @@ const move = (over) => ({
   cardIds: ['H7'], score: 100, because: 'waste', ...over,
 });
 
-test('hint sentence: sending a card home names the card and the foundation', () => {
+test('hint sentence: sending a card home names which foundation, for every suit', () => {
+  // There are four foundations; "to the foundation" leaves a screen-reader user guessing which
+  // one to look at. The card's own suit names it, and the same card always says the same words.
+  const suits = [['S', 'spades'], ['H', 'hearts'], ['D', 'diamonds'], ['C', 'clubs']];
+  for (const [suit, suitName] of suits) {
+    const s = emptyState({ waste: [card(suit, 7)] });
+    const hint = move({
+      cardIds: [`${suit}7`],
+      to: { type: 'foundation', index: 0 },
+      because: 'foundation',
+    });
+    const sentence = hintSentence(hint, s);
+    assert.equal(sentence, `Seven of ${suitName} to the ${suitName} foundation.`);
+    assert.doesNotMatch(sentence, / to the foundation\./);
+  }
+});
+
+test('hint sentence: the foundation wording does not depend on the pile index', () => {
   const s = emptyState({ waste: [card('H', 7)] });
-  const hint = move({ to: { type: 'foundation', index: 0 }, because: 'foundation' });
-  assert.equal(hintSentence(hint, s), 'Seven of hearts to the foundation.');
+  const sentences = [0, 1, 2, 3].map((index) => hintSentence(
+    move({ to: { type: 'foundation', index }, because: 'foundation' }),
+    s,
+  ));
+  assert.deepEqual(new Set(sentences).size, 1);
+  assert.equal(sentences[0], 'Seven of hearts to the hearts foundation.');
 });
 
 test('hint sentence: a reveal names the card it lands on and says what the move buys', () => {
