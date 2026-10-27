@@ -26,11 +26,12 @@ test('hint sentence: sending a card home names which foundation, for every suit'
     });
     const sentence = hintSentence(hint, s);
     assert.equal(sentence, `Seven of ${suitName} to the ${suitName} foundation.`);
-    assert.doesNotMatch(sentence, / to the foundation\./);
   }
 });
 
-test('hint sentence: the foundation wording does not depend on the pile index', () => {
+test('hint sentence: the foundation index is ignored even when the position is impossible', () => {
+  // A seven can never be first onto an empty foundation, and the four foundations here are
+  // empty, so the probe is deliberately illegal: it isolates the wording from the pile index.
   const s = emptyState({ waste: [card('H', 7)] });
   const sentences = [0, 1, 2, 3].map((index) => hintSentence(
     move({ to: { type: 'foundation', index }, because: 'foundation' }),
