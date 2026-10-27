@@ -1,5 +1,18 @@
 * { box-sizing: border-box; }
 
+/* Present for screen readers, invisible on the table. Used by the hint announcement. */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
 html, body {
   margin: 0;
   height: 100%;
@@ -50,11 +63,17 @@ body {
   padding: 6px 12px 8px;
 }
 #toolbar.lefty { flex-direction: row-reverse; }
+/* Five buttons, when Finish is showing, would squeeze the row on the narrowest phones. Take
+   the space from the gaps so every target stays comfortably above 44px. */
+@media (max-width: 359px) {
+  #toolbar { gap: 4px; }
+}
 
 #toolbar button {
   position: relative;
   touch-action: manipulation;
   width: 56px;
+  min-width: 44px;
   height: 48px;
   padding: 0;
   border-radius: 12px;
@@ -191,10 +210,38 @@ body {
 }
 
 .card.shake .inner { animation: shake 0.3s; }
+#toolbar button.shake { animation: shake 0.3s; }
 @keyframes shake {
   0%, 100% { transform: translateX(0); }
   25% { transform: translateX(-4px); }
   75% { transform: translateX(4px); }
+}
+
+/* ---------- Hint ---------- */
+/* A hint is an outline, never a moving card: the cards are positioned with inline transforms,
+   so animating transform here would fight render(). The outline stays put; only the glow pulses,
+   three short beats, then it rests until the hint clears. */
+.hint-source .inner,
+.card.hint-target .inner,
+.slot.hint-target {
+  outline: 3px solid #ffd75e;
+  outline-offset: 1px;
+  animation: hint-glow 0.4s ease-in-out 3;
+}
+@keyframes hint-glow {
+  0%, 100% { box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); }
+  50% {
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35),
+      0 0 0 4px rgba(255, 215, 94, 0.45),
+      0 0 16px 6px rgba(255, 215, 94, 0.55);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .hint-source .inner,
+  .card.hint-target .inner,
+  .slot.hint-target { animation: none; } /* the static outline is the whole answer here */
+  /* The button's shake becomes a still ring rather than no feedback at all. */
+  #toolbar button.shake { animation: none; outline: 3px solid #ffd75e; outline-offset: 2px; }
 }
 
 /* ---------- Celebration + dialogs ---------- */

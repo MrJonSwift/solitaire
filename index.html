@@ -32,10 +32,15 @@
       <button id="btn-auto" type="button" aria-label="Finish automatically" hidden>
         <svg viewBox="0 0 24 24"><path class="solid" d="M13 19l9-7-9-7v14zM2 19l9-7-9-7v14z"/></svg>
       </button>
+      <button id="btn-hint" type="button" aria-label="Show a hint">
+        <svg viewBox="0 0 24 24"><path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/></svg>
+      </button>
       <button id="btn-undo" type="button" aria-label="Undo" disabled>
         <svg viewBox="0 0 24 24"><path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/></svg>
       </button>
     </nav>
+    <!-- The board is silent, so a hint is also spoken once. Visually hidden, never focused. -->
+    <p id="hint-status" class="visually-hidden" aria-live="polite"></p>
   </div>
   <canvas id="celebration" hidden></canvas>
   <div id="modal" class="modal" role="dialog" aria-modal="true" hidden>
