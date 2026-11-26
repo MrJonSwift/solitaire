@@ -289,7 +289,7 @@ test('every conga card starts on the stage', () => {
   for (const item of sequence.items) {
     const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
     assert.ok(card.alpha > 0, `${item.id} is invisible at its launch`);
-    assert.ok(inside(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+    assert.ok(insideDrawn(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
   }
 });
 
@@ -308,7 +308,7 @@ test('the conga chain stays on the stage and never returns a NaN', () => {
       // item.exit is an absolute time, not a per-card duration: a card that has reached
       // the gap is flying off the stage on purpose.
       if (tau <= 0 || t >= item.exit) continue;
-      assert.ok(inside(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
+      assert.ok(insideDrawn(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
     }
   }
 });
@@ -334,13 +334,19 @@ test('a conga seed is repeatable, and a different seed is a different pass', () 
   assert.notDeepEqual(conga(12).items, a.items);
 });
 
-test('conga alphas are on or off and the tip never over-rotates', () => {
+test('conga alphas are on or off and the tip never over-rotates on the line', () => {
+  // On the line a card may sway (0.2rad) plus kick (0.22rad); only once it is out of the
+  // door is it allowed to spin freely.
   const sequence = conga();
   for (let t = 0; t <= sequence.duration; t += 25) {
-    for (const card of sampleSequence(sequence, t)) {
+    const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const item of sequence.items) {
+      const card = byId.get(item.id);
       assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
       assert.ok(Number.isFinite(card.rotation), `${card.id} rotation is not finite at ${t}ms`);
-      assert.ok(Math.abs(card.rotation) <= 0.2 + 1e-9, `${card.id} tips ${card.rotation}rad at ${t}ms`);
+      if (t >= item.exit) continue;
+      assert.ok(Math.abs(card.rotation) <= 0.42 + 1e-9, `${card.id} tips ${card.rotation}rad at ${t}ms`);
+      assert.ok(card.scale >= 1 && card.scale <= 1.14 + 1e-9, `${card.id} drawn at scale ${card.scale}`);
     }
   }
 });
@@ -382,7 +388,7 @@ test('the conga frames itself from a 320px phone to a landscape iPad, without a 
 
     for (const item of sequence.items) {
       const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
-      assert.ok(card.alpha > 0 && inside(card, bounds),
+      assert.ok(card.alpha > 0 && insideDrawn(card, bounds),
         `${stage.name}: ${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
     }
 
@@ -392,7 +398,7 @@ test('the conga frames itself from a 320px phone to a landscape iPad, without a 
         const tau = t - item.launch;
         if (tau <= 0 || t >= item.exit) continue;
         const card = byId.get(item.id);
-        assert.ok(inside(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
+        assert.ok(insideDrawn(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
       }
     }
 
@@ -436,7 +442,7 @@ test('the conga stays under the notch, not just above the home indicator', () =>
       const tau = t - item.launch;
       if (tau <= 0 || t >= item.exit) continue;
       const card = byId.get(item.id);
-      assert.ok(inside(card, bounds),
+      assert.ok(insideDrawn(card, bounds),
         `${item.id} crosses the notch at ${t}ms (y=${card.y.toFixed(1)})`);
     }
   }
@@ -459,6 +465,75 @@ test('the conga length lands in its band at both ends of the stage sweep', () =>
   assert.ok(short >= 6200 && short <= 6201, `short stage lasted ${short}ms, not the 6.2s floor`);
   const long = lengths(1600, 1400, 200, 280);
   assert.ok(long >= 7999 && long <= 8000, `huge stage lasted ${long}ms, not the 8s ceiling`);
+});
+
+test('the conga dances to a beat: the kick lifts the line and rolls down it', () => {
+  const sequence = conga();
+  const g = sequence.geometry;
+  // Over one bar in the middle of the dance, every card on the line kicks at least once,
+  // and at any instant during the kick only part of the line is up: it is a wave.
+  const onLine = (t) => sequence.items.filter((item) => t > item.launch + item.entry && t < item.exit);
+  const start = 3500;
+  const kicked = new Set();
+  let partial = 0;
+  for (let t = start; t < start + 1680; t += 20) {
+    const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    const live = onLine(t);
+    const up = live.filter((item) => byId.get(item.id).scale > 1.07);
+    up.forEach((item) => kicked.add(item.id));
+    if (up.length > 0 && up.length < live.length) partial++;
+  }
+  const wanted = onLine(start).filter((item) => onLine(start + 1680).includes(item));
+  for (const item of wanted) assert.ok(kicked.has(item.id), `${item.id} never kicked`);
+  assert.ok(partial > 10, 'the kick did not travel along the line');
+  assert.ok(g.hop > ch * 0.18, `the hop is only ${g.hop}px`);
+});
+
+test('the conga exit is a fling, not a slide: it speeds up, spins and flips', () => {
+  const sequence = conga();
+  for (const item of sequence.items) {
+    const at = (t) => sampleSequence(sequence, t).find((c) => c.id === item.id);
+    const a = at(item.exit + 40);
+    const b = at(item.exit + 56);
+    const c = at(Math.min(item.flight - 17, item.exit + 400));
+    const d = at(Math.min(item.flight - 1, item.exit + 416));
+    if (c.alpha === 0 || d.alpha === 0) continue;
+    const early = Math.hypot(b.x - a.x, b.y - a.y);
+    const late = Math.hypot(d.x - c.x, d.y - c.y);
+    assert.ok(late > early * 1.5, `${item.id} did not accelerate (${early.toFixed(1)} then ${late.toFixed(1)})`);
+  }
+  // Spin and tumble: judged on the cards whose flight is long enough to see (the door sits
+  // near an edge, so some cards are off within a fraction of a second).
+  const spun = new Set();
+  const flipped = new Set();
+  const seen = sequence.items.filter((item) => item.flight - item.exit >= 300);
+  for (const item of seen) {
+    const atDoor = sampleSequence(sequence, item.exit).find((c) => c.id === item.id);
+    for (let t = item.exit; t < item.flight; t += 10) {
+      const card = sampleSequence(sequence, t).find((c) => c.id === item.id);
+      if (Math.abs(card.rotation - atDoor.rotation) > 0.3) spun.add(card.id);
+      if (card.flip < 0) flipped.add(card.id);
+    }
+  }
+  assert.ok(seen.length >= 26, `only ${seen.length} cards have a visible exit`);
+  assert.ok(spun.size >= seen.length * 0.8, `only ${spun.size} of ${seen.length} cards spun on the way out`);
+  assert.ok(flipped.size >= seen.length * 0.5, `only ${flipped.size} cards flipped on the way out`);
+});
+
+test('the conga never teleports or snaps a tilt between frames', () => {
+  const sequence = conga();
+  for (let t = 0; t + 16 <= sequence.duration; t += 10) {
+    const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const card of sampleSequence(sequence, t + 16)) {
+      const previous = before.get(card.id);
+      if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+      const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+      assert.ok(moved <= 16, `${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+      const spun = Math.abs(card.rotation - previous.rotation);
+      assert.ok(spun <= (6 * Math.PI) / 180, `${card.id} spun ${((spun * 180) / Math.PI).toFixed(1)} degrees at ${t}ms`);
+      assert.ok(Math.abs(card.scale - previous.scale) <= 0.08, `${card.id} jumped in size at ${t}ms`);
+    }
+  }
 });
 
 test('the vortex frames itself on a tablet as well as on a phone', () => {

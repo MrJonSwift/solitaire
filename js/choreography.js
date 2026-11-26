@@ -4,7 +4,7 @@
 // Five 2D paths live here and share the seam. `waterfall` is the shipped cascade, which
 // leaves trails and lets every card fall off the sides. `vortex` unwinds the four foundations
 // into one funnel and bursts. `conga` turns the cards into a queue that files round the stage
-// and off through a gap. `fireworks` rains them into launch tubes and fires them up as
+// dances to a kick, and is flung off as a ribbon. `fireworks` rains them into launch tubes and fires them up as
 // shells that burst and tumble away. `fan` gathers all 52 into one cardsharp's spread, breathes in it, snaps it
 // closed into a deck, bows and flicks off. The renderer draws whichever it is handed.
 import { seededRandom } from './game.js';
@@ -299,9 +299,11 @@ function sampleVortex(item, geometry, tau) {
 // ---------- Conga ----------
 // The third 2D path, and the one with a different silhouette: not a shower of cards but a
 // queue. Every card leaves its foundation and joins one line that travels around a rounded
-// circuit of the stage, neighbours at a fixed distance so the line reads as a chain, then
-// the whole queue files off through a single gap in the ring and the board is empty for
-// the win card.
+// circuit of the stage, neighbours at a fixed distance so the line reads as a chain. It
+// dances to a "one, two, three, KICK" count, the kick rolling down the line as a wave, and
+// then each card in turn is flung from the head of the line up across the stage, speeding
+// up, spinning and tumbling, so the queue leaves as a ribbon and the board is empty for the
+// win card.
 //
 // The line is a moving walkway: a card joins at the back, travels with the rest, and leaves
 // at the front. Positions are arithmetic on one distance, so a card is on the ring for as
@@ -322,15 +324,32 @@ const CONGA_ENTRY_MAX_MS = 2600;
 const CONGA_BEAT_MS = 250;        // the ring is whole before the first card leaves it
 const CONGA_MIN_MS = 6200;        // the celebration's window, like the other 2D paths
 const CONGA_MAX_MS = 8000;
-const CONGA_EXIT_SPEED = 0.8;     // px per ms, straight out through the gap
+const CONGA_EXIT_SPEED = 0.76;    // px per ms, straight out through the gap
 const CONGA_EXIT_MIN_MS = 140;
-const CONGA_EXIT_MAX_MS = 900;
+const CONGA_EXIT_MAX_MS = 1100;
 const CONGA_TIP = 0.2;            // radians of side-to-side tip, about 11 degrees
 const CONGA_TIP_WAVES = 2;        // sway wavelengths along the queue, so it ripples
 const CONGA_TIP_PERIOD_MS = 900;
 const CONGA_BOB = 0.06;           // the whole line's vertical bob, as a fraction of card height
 const CONGA_BOB_PERIOD_MS = 1100;
 const CONGA_RADIUS = 0.4;         // corner radius of the circuit, of its short half-axis
+// The conga count: one, two, three, KICK. On the fourth beat every card hops, stretches and
+// kicks its tilt out, and the kick rolls down the line from the head to the tail like a
+// stadium wave, so the queue is visibly dancing to a beat rather than drifting. The side of
+// the kick alternates every bar.
+const CONGA_BEAT_LEN_MS = 420;
+const CONGA_BAR_MS = CONGA_BEAT_LEN_MS * 4;
+const CONGA_KICK_RIPPLE_MS = 24;  // each card kicks this long after the one in front
+const CONGA_HOP = 0.28;           // kick height, as a fraction of card height
+const CONGA_KICK_TILT = 0.22;     // radians the kick adds to the sway, about 13 degrees
+const CONGA_KICK_STRETCH = 0.14;  // how much larger a card is drawn at the top of its hop
+const CONGA_SCALE_MAX = 1 + CONGA_KICK_STRETCH;
+// The exit: a card dances out of the door slowly, then picks up speed, spinning and flipping
+// over as it goes. Acceleration is what turns "slides away" into "flung away".
+const CONGA_EXIT_V0 = 0.25;       // px per ms as a card steps through the door
+const CONGA_EXIT_ACCEL = 0.0016;  // px per ms per ms
+const CONGA_EXIT_SPIN = 0.0028;   // rad per ms once a card is out of the door
+const CONGA_EXIT_FLIP = 0.006;    // rad per ms of end-over-end tumble
 
 // The circuit is a rounded rectangle: the longest closed loop that stays on a stage, which
 // is what keeps 52 cards from bunching into a band on a 320px phone. The bounds are built
@@ -340,8 +359,9 @@ const CONGA_RADIUS = 0.4;         // corner radius of the circuit, of its short 
 function makeCongaLoop(width, top, bottom, cardWidth, cardHeight, tip, bob) {
   const cos = Math.abs(Math.cos(tip));
   const sin = Math.abs(Math.sin(tip));
-  const ex = (cos * cardWidth + sin * cardHeight) / 2 + 4;
-  const ey = (sin * cardWidth + cos * cardHeight) / 2 + 4 + bob;
+  // Sized for the card at its largest (the kick stretch), so a kick never crops a corner.
+  const ex = ((cos * cardWidth + sin * cardHeight) / 2) * CONGA_SCALE_MAX + 4;
+  const ey = ((sin * cardWidth + cos * cardHeight) / 2) * CONGA_SCALE_MAX + 4 + bob;
   const halfW = Math.max(1, width / 2 - ex);
   const topEdge = Math.max(0, finite(top)) + ey;
   const halfH = Math.max(1, (bottom - topEdge - ey) / 2);
@@ -430,7 +450,19 @@ function buildConga({
   const rng = seededRandom(seed);
   const ordered = launchOrder(cards, piles);
   const bob = cardHeight * CONGA_BOB;
-  const loop = makeCongaLoop(width, topInset, floorY + cardHeight, cardWidth, cardHeight, CONGA_TIP, bob);
+  // The hop is a vertical speed on top of the line's own, and on the side straights the two
+  // point the same way, so the hop gets only what is left of the frame budget (1px per ms)
+  // once the line is moving at its top speed. The hop's peak speed is pi * hop / beat. On a
+  // phone that is the full design hop; a tablet's big cards get a smaller one and lean on
+  // the stretch and the tilt instead.
+  const bobSpeed = (TAU * cardHeight * CONGA_BOB) / CONGA_BOB_PERIOD_MS;
+  const hop = Math.min(
+    cardHeight * CONGA_HOP,
+    (Math.max(0, 0.97 - CONGA_MAX_SPEED - bobSpeed) * CONGA_BEAT_LEN_MS) / Math.PI,
+  );
+  const loop = makeCongaLoop(
+    width, topInset, floorY + cardHeight, cardWidth, cardHeight, CONGA_TIP + CONGA_KICK_TILT, bob + hop,
+  );
   // Spacing answers to both the card and the circuit: tight enough to fit every card with
   // a gap left over, loose enough that neighbours overlap only partly and the faces read.
   const count = Math.max(1, ordered.length);
@@ -480,6 +512,7 @@ function buildConga({
       rank: card.rank,
       pile,
       launch,
+      index,
       offset,
       entry,
       tx: slot.x,
@@ -497,7 +530,7 @@ function buildConga({
   const natural = lastEntry + CONGA_BEAT_MS;
   const exitStep = spacing / speed; // one card's gap passes the exit every step
   const train = Math.max(0, items.length - 1) * exitStep;
-  const half = Math.hypot(cardWidth, cardHeight) / 2;
+  const half = (Math.hypot(cardWidth, cardHeight) / 2) * CONGA_SCALE_MAX;
 
   // No card may leave the ring before it has landed in it, whatever the deadline says.
   let floor = 0;
@@ -507,18 +540,28 @@ function buildConga({
     const door = congaAt(loop, speed * firstExit);
     const doorCx = door.x + cardWidth / 2;
     const doorCy = door.y + cardHeight / 2;
-    // Outward from the middle of the stage: every card leaves by the nearest edge, which
-    // is the shortest way off the stage and never crosses the queue.
-    const away = Math.hypot(doorCx - loop.cx, doorCy - loop.cy) || 1;
-    const ux = (doorCx - loop.cx) / away;
-    const uy = (doorCy - loop.cy) / away;
-    const edgeX = ux > 1e-6 ? (width + half - doorCx) / ux : ux < -1e-6 ? (-half - doorCx) / ux : Infinity;
-    const edgeY = uy > 1e-6 ? (height + half - doorCy) / uy : uy < -1e-6 ? (-half - doorCy) / uy : Infinity;
-    const burst = clamp(
-      Math.min(edgeX, edgeY) / CONGA_EXIT_SPEED,
-      CONGA_EXIT_MIN_MS,
-      CONGA_EXIT_MAX_MS,
-    );
+    // A fling across the stage, not a step off it. The door is usually right beside an
+    // edge, and leaving through that edge took a card off in a fifth of a second, so the
+    // exit was never seen. Instead each card is flung up (or down) across the stage, leaning
+    // in toward the middle, over the heads of the line — whichever way gives the longest flight
+    // that still fits the time allowed.
+    const side = doorCx >= loop.cx ? 1 : -1;
+    const edgeFor = (dx, dy) => {
+      const n = Math.hypot(dx, dy);
+      const vx = dx / n;
+      const vy = dy / n;
+      const edgeX = vx > 1e-6 ? (width + half - doorCx) / vx : vx < -1e-6 ? (-half - doorCx) / vx : Infinity;
+      const edgeY = vy > 1e-6 ? (height + half - doorCy) / vy : vy < -1e-6 ? (-half - doorCy) / vy : Infinity;
+      return { vx, vy, d: Math.min(edgeX, edgeY) };
+    };
+    const options = [edgeFor(-side * 0.35, -1), edgeFor(-side * 0.35, 1)];
+    const fits = options.filter((o) => congaExitTime(o.d) <= CONGA_EXIT_MAX_MS);
+    const pick = fits.length
+      ? fits.reduce((a, b) => (b.d > a.d ? b : a))
+      : options.reduce((a, b) => (b.d < a.d ? b : a));
+    const ux = pick.vx;
+    const uy = pick.vy;
+    const burst = clamp(congaExitTime(pick.d), CONGA_EXIT_MIN_MS, CONGA_EXIT_MAX_MS);
     return { door, ux, uy, burst };
   };
 
@@ -529,8 +572,8 @@ function buildConga({
   // in one pass; the price is at most a fraction of a second of empty stage at the very end,
   // which the canvas fade and the win card already cover.
   let exitAllowance = CONGA_EXIT_MIN_MS;
-  for (let i = 0; i < 24; i++) {
-    exitAllowance = Math.max(exitAllowance, exitAt((i / 24) * (loop.length / speed)).burst);
+  for (let i = 0; i < 96; i++) {
+    exitAllowance = Math.max(exitAllowance, exitAt((i / 96) * (loop.length / speed)).burst);
   }
   const wanted = clamp(natural + train + exitAllowance, CONGA_MIN_MS, CONGA_MAX_MS);
   // Never before the first landing has happened; that is the one thing the deadline cannot
@@ -546,7 +589,10 @@ function buildConga({
   // The allowance is what the length is planned on; the cards themselves fly for the burst
   // their shared door actually needs, so every one of them is gone by this time. Ceil, not
   // round: the last card must never be in the air at the instant the sequence ends.
-  const duration = items.length ? Math.ceil(firstExit + train + exitAllowance) : 0;
+  // The fling's direction can switch between up and down as the door moves, so the sampled
+  // allowance can fall a little short of the door actually used; the last flight wins.
+  const lastFlight = items.reduce((max, item) => Math.max(max, item.flight), 0);
+  const duration = items.length ? Math.ceil(Math.max(firstExit + train + exitAllowance, lastFlight)) : 0;
   return {
     variant: 'conga',
     duration,
@@ -555,6 +601,7 @@ function buildConga({
       ...loop,
       speed,
       bob,
+      hop,
       tip: CONGA_TIP,
       tipWaves: CONGA_TIP_WAVES,
       doorDistance: ((speed * firstExit) % loop.length + loop.length) % loop.length,
@@ -567,40 +614,84 @@ function buildConga({
   };
 }
 
+// How far a card has flown since it stepped out of the door: it accelerates from a dance
+// step up to the frame budget's speed, then holds it. The inverse sizes each card's flight.
+function congaExitDist(bt) {
+  const tCap = (CONGA_EXIT_SPEED - CONGA_EXIT_V0) / CONGA_EXIT_ACCEL;
+  if (bt <= tCap) return CONGA_EXIT_V0 * bt + (CONGA_EXIT_ACCEL * bt * bt) / 2;
+  return CONGA_EXIT_V0 * tCap + (CONGA_EXIT_ACCEL * tCap * tCap) / 2 + CONGA_EXIT_SPEED * (bt - tCap);
+}
+
+function congaExitTime(distance) {
+  const tCap = (CONGA_EXIT_SPEED - CONGA_EXIT_V0) / CONGA_EXIT_ACCEL;
+  const dCap = congaExitDist(tCap);
+  if (distance >= dCap) return tCap + (distance - dCap) / CONGA_EXIT_SPEED;
+  const a = CONGA_EXIT_ACCEL / 2;
+  return (-CONGA_EXIT_V0 + Math.sqrt(CONGA_EXIT_V0 * CONGA_EXIT_V0 + 4 * a * Math.max(0, distance))) / (2 * a);
+}
+
+// The kick on the fourth beat, for one card at one instant: 0 off the beat, rising to 1 at
+// the top of the hop. `side` alternates every bar so the line kicks left, then right.
+function congaKick(item, now) {
+  const local = now - item.index * CONGA_KICK_RIPPLE_MS;
+  const inBar = ((local % CONGA_BAR_MS) + CONGA_BAR_MS) % CONGA_BAR_MS;
+  const u = (inBar - CONGA_BEAT_LEN_MS * 3) / CONGA_BEAT_LEN_MS;
+  if (u <= 0 || u >= 1) return { lift: 0, side: 1 };
+  const bar = Math.floor(local / CONGA_BAR_MS);
+  const lift = Math.sin(Math.PI * u);
+  return { lift: lift * lift, side: bar % 2 ? -1 : 1 };
+}
+
 function sampleConga(item, geometry, tau) {
   if (tau <= 0) return { x: item.ox, y: item.oy, alpha: 0, rotation: 0 };
   const now = tau + item.launch;
   const bob = geometry.bob * Math.sin((TAU * now) / CONGA_BOB_PERIOD_MS);
   const distance = finite(geometry.speed * now - item.offset);
+  const kick = congaKick(item, now);
+  const hop = -geometry.hop * kick.lift;
+  const kickTilt = CONGA_KICK_TILT * kick.lift * kick.side;
+  const stretch = 1 + CONGA_KICK_STRETCH * kick.lift;
 
   if (tau < item.entry) {
     // Spring from the pile onto the moving line, landing in the slot the queue will have
-    // reached at hand-over. A fixed landing point means a straight, evenly paced flight.
+    // reached at hand-over. A fixed landing point means a straight, evenly paced flight;
+    // the beat fades in with the landing so the hand-over has nothing to jump over.
     const t = clamp(tau / item.entry, 0, 1);
     const s = t * t * (3 - 2 * t);
     const sway = congaSway(geometry, distance, now);
     return {
       x: item.ox + (item.tx - item.ox) * s,
-      y: item.oy + (item.ty + bob - item.oy) * s,
+      y: item.oy + (item.ty + bob + hop - item.oy) * s,
       alpha: 1,
-      rotation: sway * s,
+      rotation: (sway + kickTilt) * s,
+      scale: 1 + (stretch - 1) * s,
     };
   }
 
   const sway = congaSway(geometry, now < item.exit ? distance : geometry.doorDistance, now);
   if (now < item.exit) {
     const point = congaAt(geometry, distance);
-    return { x: point.x, y: point.y + bob, alpha: 1, rotation: sway };
+    return { x: point.x, y: point.y + bob + hop, alpha: 1, rotation: sway + kickTilt, scale: stretch };
   }
 
-  // The line files out through the gap: straight, outward, still bobbing, gone before the
-  // win card arrives. No private fade — a card is either on the stage or off it.
+  // Out through the gap: a dance step that accelerates into a fling, spinning and tumbling
+  // end over end. The hop and stretch it had at the door settle out over the first beat, so
+  // nothing jumps. No private fade — a card is either on the stage or off it.
   const bt = now - item.exit;
+  const settle = 1 - smoothstep(bt / CONGA_BEAT_LEN_MS);
+  const atDoor = congaKick(item, item.exit);
+  const travel = congaExitDist(bt);
+  const spinSide = item.index % 2 ? -1 : 1;
   return {
-    x: geometry.doorX + geometry.ux * CONGA_EXIT_SPEED * bt,
-    y: geometry.doorY + bob + geometry.uy * CONGA_EXIT_SPEED * bt,
+    x: geometry.doorX + geometry.ux * travel,
+    y: geometry.doorY + bob + geometry.uy * travel - geometry.hop * atDoor.lift * settle,
     alpha: now < item.flight ? 1 : 0,
-    rotation: sway,
+    rotation: sway + CONGA_KICK_TILT * atDoor.lift * atDoor.side * settle
+      + spinSide * CONGA_EXIT_SPIN * bt * smoothstep(bt / 400),
+    scale: 1 + CONGA_KICK_STRETCH * Math.max(atDoor.lift * settle, smoothstep(bt / 400)),
+    // Each card tumbles at its own rate, so the ribbon is a mix of faces and backs.
+    flip: Math.cos(CONGA_EXIT_FLIP * (0.5 + ((item.index * 7) % 11) / 11)
+      * Math.max(0, bt - 120) * smoothstep((bt - 120) / 300)),
   };
 }
 
