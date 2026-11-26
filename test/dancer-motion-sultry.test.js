@@ -3,9 +3,15 @@ import assert from 'node:assert/strict';
 import {
   LOOP, COUNT, JOINT_NAMES, LAG, sample, sampleDegrees, countAt,
 } from '../js/dancer-motion-sultry.js';
-import { JOINT_NAMES as SALSA_JOINTS } from '../js/dancer-motion.js';
+// The joints the shared card body has (dancer-figure.js). Written out here since the salsa,
+// which used to own this list, was retired: its stiff legs were the reason this dance exists.
+const BODY_JOINTS = [
+  'hips', 'spine', 'chest', 'neck', 'head',
+  'thighL', 'shinL', 'footL', 'thighR', 'shinR', 'footR',
+  'armL', 'foreL', 'handL', 'armR', 'foreR', 'handR',
+];
 
-// The slower card dance has the same seam as the salsa: numbers in, pose out, held still in
+// The card dance has the same seam as every celebration's motion: numbers in, pose out, held still in
 // Node so it can be retuned without a browser and can never hand the rig a NaN.
 
 test('two slow bars: eight counts of 1.5 s', () => {
@@ -14,7 +20,7 @@ test('two slow bars: eight counts of 1.5 s', () => {
 });
 
 test('it drives exactly the joints the shared body has', () => {
-  assert.deepEqual([...JOINT_NAMES].sort(), [...SALSA_JOINTS].sort());
+  assert.deepEqual([...JOINT_NAMES].sort(), [...BODY_JOINTS].sort());
 });
 
 test('the loop closes: the last frame is the first frame', () => {

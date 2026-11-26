@@ -5,7 +5,7 @@
 // The sequence itself comes from the pure choreography module; this file only draws and fades.
 import { SUIT_SYMBOLS, rankLabel, isRed } from './game.js';
 import { computeCelebrationGeometry } from './celebration-geometry.js';
-import { buildWinSequence, sampleSequence } from './choreography.js';
+import { buildWinSequence, sampleSequence, sampleSparks } from './choreography.js';
 import { startDancer } from './dancer.js';
 import { readStage, FADE_MS, SKIP_FADE_MS } from './celebration-stage.js';
 
@@ -88,6 +88,80 @@ function makeSprite(card, cw, ch, dpr) {
   return c;
 }
 
+// The back a tumbling card shows when it flips over. Same shape as the face, a deep red
+// with a light lattice, so a burst of fireworks reads as real cards turning in the air.
+function makeBackSprite(cw, ch, dpr) {
+  const c = document.createElement('canvas');
+  c.width = Math.ceil(cw * dpr);
+  c.height = Math.ceil(ch * dpr);
+  const g = c.getContext('2d');
+  g.scale(dpr, dpr);
+  const r = cw * 0.09;
+  const rounded = (inset) => {
+    const w = cw - inset;
+    const h = ch - inset;
+    g.beginPath();
+    g.moveTo(inset + r, inset);
+    g.arcTo(w, inset, w, h, r);
+    g.arcTo(w, h, inset, h, r);
+    g.arcTo(inset, h, inset, inset, r);
+    g.arcTo(inset, inset, w, inset, r);
+    g.closePath();
+  };
+  rounded(0.5);
+  g.fillStyle = '#fff';
+  g.fill();
+  g.strokeStyle = '#999';
+  g.stroke();
+  const pad = cw * 0.08;
+  rounded(pad);
+  g.fillStyle = '#b3122a';
+  g.fill();
+  g.save();
+  g.clip();
+  g.strokeStyle = 'rgba(255, 255, 255, 0.35)';
+  g.lineWidth = Math.max(1, cw * 0.025);
+  const step = cw * 0.16;
+  for (let d = -ch; d < cw + ch; d += step) {
+    g.beginPath(); g.moveTo(d, 0); g.lineTo(d + ch, ch); g.stroke();
+    g.beginPath(); g.moveTo(d + ch, 0); g.lineTo(d, ch); g.stroke();
+  }
+  g.restore();
+  return c;
+}
+
+// The fireworks' light: trails, flashes, rings and streaks, drawn additively so they glow
+// on the felt. Numbers come from the choreography; this only paints them.
+function drawSparks(ctx, sparks) {
+  if (!sparks.length) return;
+  ctx.save();
+  ctx.globalCompositeOperation = 'lighter';
+  ctx.lineCap = 'round';
+  for (const s of sparks) {
+    if (s.alpha <= 0 || s.r <= 0) continue;
+    if (s.kind === 'flash') {
+      const glow = ctx.createRadialGradient(s.x, s.y, 0, s.x, s.y, s.r);
+      glow.addColorStop(0, `hsla(${s.hue}, 100%, 92%, ${s.alpha})`);
+      glow.addColorStop(0.35, `hsla(${s.hue}, 100%, 65%, ${s.alpha * 0.6})`);
+      glow.addColorStop(1, `hsla(${s.hue}, 100%, 50%, 0)`);
+      ctx.fillStyle = glow;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    } else if (s.kind === 'ring') {
+      ctx.strokeStyle = `hsla(${s.hue}, 100%, 70%, ${s.alpha})`;
+      ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.stroke();
+    } else if (s.kind === 'streak') {
+      ctx.strokeStyle = `hsla(${s.hue}, 100%, 75%, ${s.alpha})`;
+      ctx.lineWidth = s.r * 1.6;
+      ctx.beginPath(); ctx.moveTo(s.x, s.y); ctx.lineTo(s.x2, s.y2); ctx.stroke();
+    } else {
+      ctx.fillStyle = `hsla(${s.hue}, 100%, 80%, ${s.alpha})`;
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.restore();
+}
+
 // Takes the context rather than looking it up: this runs on every frame of a variant that
 // clears, and getContext is not free on a phone.
 function clearCanvas(canvas, ctx) {
@@ -144,9 +218,10 @@ function startCanvasCelebration(canvas, {
   let cardW = cw;
   let cardH = ch;
   let sprites = new Map();
+  let backSprite = null;
 
   // Only the waterfall leaves trails: its trails are the animation. The vortex, conga,
-  // shuffle and fan are made of distinct overlapping cards, so they clear their frame first
+  // fireworks and fan are made of distinct overlapping cards, so they clear their frame first
   // or the shapes smear into a disc, a band, a blur or a stockade of edges.
   const trails = variant === 'waterfall';
 
@@ -209,6 +284,7 @@ function startCanvasCelebration(canvas, {
     } else {
       sprites = new Map();
     }
+    backSprite = null;
     // Rebuild on the new stage so the floor and the side walls stay truthful. The launch
     // times are unchanged, so the pass still ends on the original schedule.
     sequence = makeSequence();
@@ -231,15 +307,28 @@ function startCanvasCelebration(canvas, {
       return;
     }
     if (!trails) clearCanvas(session.canvas, ctx);
+    drawSparks(ctx, sampleSparks(sequence, t));
     for (const card of sampleSequence(sequence, t)) {
       if (card.alpha <= 0) continue;
-      const sprite = spriteFor(card.id);
+      // A card past edge-on shows its back; scale and flip default to 1 on every other path.
+      let sprite;
+      if (card.flip < 0) {
+        if (!backSprite) backSprite = makeBackSprite(cardW, cardH, geometry.dpr);
+        sprite = backSprite;
+      } else {
+        sprite = spriteFor(card.id);
+      }
       ctx.save();
       ctx.globalAlpha = card.alpha;
       const x = card.x + cardW / 2;
       const y = card.y + cardH / 2;
       ctx.translate(x, y);
       if (card.rotation) ctx.rotate(card.rotation);
+      if (card.scale !== 1 || card.flip !== 1) {
+        // Never a zero scale: a card exactly edge-on still draws as a sliver.
+        const sx = card.scale * Math.max(0.04, Math.abs(card.flip));
+        ctx.scale(sx, card.scale);
+      }
       ctx.drawImage(sprite, -cardW / 2, -cardH / 2, cardW, cardH);
       ctx.restore();
     }
@@ -305,21 +394,20 @@ function hasWebGL() {
 // that knows about more than one (the dancer has no choreography module of its own).
 //
 // Rules for the order: two wins in a row never show the same celebration, and the newest
-// ones lead so they are met early. The two card dances share one body but are separate
-// entries, so they must not sit side by side either. With the sultry dance leading, the
-// rotation is sultry -> fan -> shuffle -> conga -> dancer -> vortex -> waterfall; every
-// neighbouring pair differs, including the wrap from the waterfall back to the sultry one,
-// and if WebGL is missing both dances drop out and the remaining list still never repeats
-// a neighbour.
-export const CELEBRATIONS = ['sultry', 'fan', 'shuffle', 'conga', 'dancer', 'vortex', 'waterfall'];
+// ones lead so they are met early. The rotation is fireworks -> sultry -> fan -> conga ->
+// vortex -> waterfall; every neighbouring pair differs, including the wrap from the waterfall
+// back to the fireworks, and if WebGL is missing the dance drops out and the remaining list
+// still never repeats a neighbour. The salsa dance and the shuffle were retired: the salsa's
+// legs were stiff, and the shuffle barely moved before sliding off.
+export const CELEBRATIONS = ['fireworks', 'sultry', 'fan', 'conga', 'vortex', 'waterfall'];
 
-// Which dance each WebGL variant asks the card dancer for. Same renderer, same body.
-const DANCER_DANCES = { dancer: 'salsa', sultry: 'sultry' };
+// Which dance each WebGL variant asks the card dancer for.
+const DANCER_DANCES = { sultry: 'sultry' };
 
-// The list to rotate through on this device. A browser without WebGL cannot play either
+// The list to rotate through on this device. A browser without WebGL cannot play the
 // dance, and their fallback is the waterfall — so leaving them in the rotation would play
 // the waterfall twice in a row, which is the one thing the rotation exists to prevent.
-// Dropping them keeps every consecutive pair different, and the dances simply do not exist
+// Dropping it keeps every consecutive pair different, and the dance simply does not exist
 // on that device.
 export function availableCelebrations() {
   if (hasWebGL()) return [...CELEBRATIONS];
@@ -353,7 +441,7 @@ export function startCelebration(canvas, options = {}) {
   if (!renderer) {
     renderer = startCanvasCelebration(canvas, {
       ...options,
-      variant: dance ? 'waterfall' : variant, // either dance falls back to the waterfall
+      variant: dance ? 'waterfall' : variant, // the dance falls back to the waterfall
     });
   }
 

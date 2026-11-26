@@ -4,8 +4,8 @@
 // Five 2D paths live here and share the seam. `waterfall` is the shipped cascade, which
 // leaves trails and lets every card fall off the sides. `vortex` unwinds the four foundations
 // into one funnel and bursts. `conga` turns the cards into a queue that files round the stage
-// and off through a gap. `shuffle` tidies them into a deck, riffles it, squares it up and
-// slides it away. `fan` gathers all 52 into one cardsharp's spread, breathes in it, snaps it
+// and off through a gap. `fireworks` rains them into launch tubes and fires them up as
+// shells that burst and tumble away. `fan` gathers all 52 into one cardsharp's spread, breathes in it, snaps it
 // closed into a deck, bows and flicks off. The renderer draws whichever it is handed.
 import { seededRandom } from './game.js';
 
@@ -611,64 +611,83 @@ function congaSway(geometry, distance, now) {
   return geometry.tip * Math.sin(TAU * (s * geometry.tipWaves - now / CONGA_TIP_PERIOD_MS));
 }
 
-// ---------- Shuffle ----------
-// The quiet ending among the loud ones. Not a scatter: the 52 cards tidy themselves away.
-// Three beats the eye can name at phone size: gather (every card flies to one neat deck in
-// the middle of the stage), riffle (the deck splits into two packets that lift, tilt opposite
-// ways and cross into each other), snap (the packets square up, the deck hops once and slides
-// off the bottom). The stage is empty when the pass ends.
-//
-// The deck is a tight 7x8 lattice rather than 52 cards at one pixel: the drawn edges are what
-// make it read as a deck with thickness, and the same lattice is where the halves squaring up
-// land, so no card has to jump. The riffle fans each half along its own tilt, so the packet is
-// a short stack of visible edges, not a single card. Two packets of those, crossing, is the
-// whole trick: at 320px the eye sees a handful of interleaved edges, which is a shuffle.
-const SHUFFLE_STAGGER_MS = 14;        // one card leaves its foundation every 14ms
-const SHUFFLE_GATHER_RATE = 1.55;     // ms of flight per px of gap. Smoothstep peaks at 1.5x
-                                      // the average speed, so the far cards still step under
-                                      // 16px a frame. Deliberately no upper cap: the rate is
-                                      // the frame budget, and capping the flight would break it
-                                      // on a stage whose far foundation is a long way away.
-const SHUFFLE_GATHER_MIN_MS = 500;
-const SHUFFLE_HOLD_MS = 200;          // the finished deck rests for a beat before the split
-const SHUFFLE_MIN_RIFFLE_MS = 2000;   // the earliest the riffle may start. On a phone the deck
-                                      // is complete well before this; on a big stage the wait
-                                      // for the last card pushes it later.
-const SHUFFLE_SPLIT_MS = 700;         // halves separate and lift
-const SHUFFLE_APPROACH_MS = 650;      // halves slide into each other
-const SHUFFLE_SQUARE_MS = 900;        // packets resolve into the one deck
-const SHUFFLE_SQUARE_SKEW_MS = 150;   // spread of the square-up start times, so the cards
-                                      // cascade in instead of the deck switching in one frame
-const SHUFFLE_BOUNCE_MS = 800;        // one hop up and down after the deck is square
-const SHUFFLE_BOUNCE_AMP = 0.4;       // hop height, as a fraction of card height
-const SHUFFLE_SNAP_HOLD_MS = 450;     // the squared deck sits before it leaves
-const SHUFFLE_TILT = 0.3;             // radians of packet tilt, about 17 degrees
-const SHUFFLE_APPROACH_TILT = 0.45;   // how much of the tilt is left when the halves meet
-const SHUFFLE_SPLIT_SEP = 0.8;        // half separation at full split, of card width
-const SHUFFLE_APPROACH_SEP = 0.45;    // half separation when they cross, of card width. Wide
-                                      // enough that the two fans stay two packets at 320px,
-                                      // narrow enough that their inner cards still overlap.
-const SHUFFLE_LIFT = 0.35;            // packet lift, of card height
-const SHUFFLE_PACKET_STEP = 0.04;     // neighbour offset inside one half, of card width. The
-                                      // visible edges are the riffle, so they need to read.
-const SHUFFLE_DECK_GAP = 0.05;        // lattice spacing, of card width
-const SHUFFLE_DECK_COLS = 7;
-const SHUFFLE_EXIT_SPEED = 0.99;      // px per ms, straight down and off the bottom. Just
-                                      // under the 16px-a-frame cap, so a wide stage's longer
-                                      // slide still fits the pass's six-to-seven-second window.
-const SHUFFLE_EXIT_MIN_MS = 350;
-
+// Smoothstep: eases in and out, and peaks at 1.5x the average speed, which is what every
+// "ms per px" rate below is sized against.
 const smoothstep = (x) => {
   const u = clamp(x, 0, 1);
   return u * u * (3 - 2 * u);
 };
 
-// The end of approach is where the square-up begins. Derived here once, so the sampler reads
-// the same three constants the build does and the geometry needs no extra field.
-const shuffleSquareStart = (geometry) =>
-  geometry.riffleStart + SHUFFLE_SPLIT_MS + SHUFFLE_APPROACH_MS;
+// ---------- Fireworks ----------
+// The loud one. The cards rain down off the foundations into launch tubes along the bottom,
+// a handful to a tube, and each tube fires its packet up as a shell: it climbs, slows, hangs
+// for a squeeze, then bursts. The cards fly out as a two-ring flower, pop larger as they go,
+// tumble end over end showing their backs, and fall away off the bottom. Six shells, one
+// after another, the last one the biggest. The renderer adds the light — the trail, the flash
+// and the ring — from the same numbers, via sampleSparks.
+//
+// Why it feels alive when the old paths did not: nothing moves at one constant speed. The
+// shell decelerates into its apex, the burst decelerates under air drag and then gravity
+// takes over, and every card spins and flips at its own rate. The frame budget (16px and 6
+// degrees a frame) is still respected everywhere: drag and the terminal velocity are chosen
+// so no card ever exceeds 0.9px per ms, which is also what makes the fall read as weight.
+//
+// Every burst is solved against the stage: the shell's apex sits low enough below the notch,
+// and far enough from both sides, that the whole flower — including the pop and every
+// rotation — stays on the stage. Cards only ever leave through the bottom.
+const FW_SHELLS = [8, 8, 8, 8, 8, 12]; // cards per shell; the finale is the big one
+const FW_SPEED = 0.9;            // px per ms: the ceiling every phase is sized against
+const FW_DROP_MIN_MS = 450;
+const FW_LOAD_STAGGER_MS = 45;   // one card lands in a tube every 45ms
+const FW_LOAD_HOLD_MS = 160;     // the loaded tube rests a beat before it fires
+const FW_SHELL_GAP_MS = 460;     // between one shell firing and the next
+const FW_FINALE_GAP_MS = 320;    // a little extra wait before the finale, for suspense
+const FW_RISE_MIN_MS = 650;
+const FW_HANG_MS = 110;          // the shell hangs at its apex and squeezes before it bursts
+const FW_PACKET_SCALE = 0.82;    // a loaded shell is a little smaller than a card at rest
+const FW_SQUEEZE = 0.66;         // how small the shell squeezes just before it bursts
+const FW_POP = 0.17;             // how far past full size a card pops as it flies out
+const FW_POP_MS = 320;
+const FW_SCALE_MAX = 1.16;       // the largest a card is ever drawn; bounds are sized by it
+const FW_TERMINAL = 0.85;        // px per ms: the fall's terminal velocity
+const FW_DRAG_MAX = 0.006;       // per ms: how quickly a burst loses its outward speed
+const FW_FALL_RATE = 0.0012;     // per ms: how quickly the fall builds to terminal velocity
+const FW_STACK_STEP = 1.5;       // px between cards in a loaded tube, so it reads as a stack
+const FW_HUES = [48, 330, 190, 120, 280, 20]; // gold, pink, cyan, green, violet, orange
 
-function buildShuffle({
+// The burst flight, in closed form so any instant can be sampled without stepping. The
+// outward throw dies under air drag; the fall ramps up to its terminal velocity on a slower
+// clock of its own, so the flower opens fully before it droops — tying the two together made
+// gravity win within a tenth of a second and the burst never rose. Speed stays bounded by
+// max(v0, terminal) because the throw decays faster than the fall builds (drag > fallRate).
+function fireworkFlight(item, rocket, bt) {
+  const k = rocket.drag;
+  const a = (1 - Math.exp(-k * bt)) / k;
+  const k2 = rocket.fallRate;
+  const b = (1 - Math.exp(-k2 * bt)) / k2;
+  return {
+    cx: item.bx + item.vx * a,
+    cy: item.by + item.vy * a + rocket.terminal * (bt - b),
+    rotation: item.rot0 + item.spinEnd * bt + (item.spin - item.spinEnd) * a,
+    flip: Math.cos(item.flipRate * bt),
+    scale: 1 + (FW_SQUEEZE - 1) * Math.exp(-bt / 70) + FW_POP * Math.sin(Math.PI * Math.min(bt / FW_POP_MS, 1)),
+  };
+}
+
+// The shell's centre on its climb: velocity falls linearly to nothing at the apex, so the
+// peak speed is exactly twice the average and the duration is sized from that.
+function shellAt(rocket, t) {
+  const u = clamp((t - rocket.fire) / rocket.rise, 0, 1);
+  const e = 1 - (1 - u) * (1 - u);
+  return {
+    x: rocket.padX + (rocket.apexX - rocket.padX) * e,
+    y: rocket.padY + (rocket.apexY - rocket.padY) * e,
+    u,
+    e,
+  };
+}
+
+function buildFireworks({
   cards = [],
   piles = [],
   cw = 0,
@@ -690,182 +709,275 @@ function buildShuffle({
   const rng = seededRandom(seed);
   const ordered = launchOrder(cards, piles);
 
-  // The deck sits in the middle of the part of the stage that is not safe-area. Its lattice
-  // is small, so this is also the gather point: every bound is a card-and-a-half either way,
-  // far inside the edges even at 320px.
-  const deckCx = width / 2;
-  const deckCy = topInset + Math.max(1, floorY + cardHeight - topInset) / 2;
-  const half = Math.hypot(cardWidth, cardHeight) / 2;
-  const gap = Math.max(0.5, cardWidth * SHUFFLE_DECK_GAP);
-  const step = Math.max(0.5, cardWidth * SHUFFLE_PACKET_STEP);
-  const rows = Math.max(1, Math.ceil(ordered.length / SHUFFLE_DECK_COLS));
-  const count = Math.max(1, ordered.length);
-  const halfCount = Math.ceil(count / 2);
-  const tiltCos = Math.cos(SHUFFLE_TILT);
-  const tiltSin = Math.sin(SHUFFLE_TILT);
+  // The reach of a card from its centre at its largest, whatever its rotation or flip.
+  const reach = (Math.hypot(cardWidth, cardHeight) / 2) * FW_SCALE_MAX;
+  const margin = 6;
+  const stageBottom = floorY + cardHeight;
+  // The tubes sit on the floor, lifted just enough that a tilted card in the stack never
+  // dips under the home indicator.
+  const padY = stageBottom - reach;
 
-  const items = ordered.map(({ card, pile }, index) => {
+  // The burst radius: a share of the stage, then cut down to what the stage can hold with
+  // the apex centred and as high as the notch allows.
+  const highest = topInset + margin + reach;
+  let radius = clamp(Math.min(width * 0.3, height * 0.22), cardWidth * 0.8, 340);
+  radius = Math.max(4, Math.min(radius, width / 2 - reach - margin - 4, (padY - highest) * 0.55));
+  const drag = Math.min(FW_DRAG_MAX, (FW_SPEED * 0.98) / radius);
+  const apexTop = highest + radius;                          // highest an apex may sit
+  const apexLow = apexTop + Math.max(0, padY - apexTop) * 0.32; // lowest an apex may sit
+  const apexLeft = Math.min(width / 2, radius + reach + margin + 4);
+  const apexRight = Math.max(width / 2, width - apexLeft);
+
+  // Where each shell bursts, as a share of the allowed box. Alternating sides so the eye is
+  // pulled around the stage; the finale is dead centre and as high as it may go.
+  const SPOTS = [[0.5, 0.35], [0.12, 0.7], [0.88, 0.45], [0.3, 0.05], [0.72, 0.85], [0.5, 0]];
+
+  // Hand the cards to shells in launch order (kings first), so each shell carries a mix of
+  // suits and colours rather than one suit.
+  const total = Math.max(1, ordered.length);
+  const sizes = FW_SHELLS.map((n) => Math.round((n * total) / 52));
+  sizes[sizes.length - 1] += total - sizes.reduce((a, b) => a + b, 0);
+
+  const rockets = sizes.map((n, k) => {
+    const [fx, fy] = SPOTS[k % SPOTS.length];
+    const apexX = apexLeft + (apexRight - apexLeft) * clamp(fx + (rng() - 0.5) * 0.12, 0, 1);
+    const apexY = apexTop + (apexLow - apexTop) * clamp(fy + (rng() - 0.5) * 0.1, 0, 1);
+    const padX = clamp(apexX + (rng() - 0.5) * radius * 0.5, reach, Math.max(reach, width - reach));
+    const distance = Math.hypot(apexX - padX, apexY - padY);
+    return {
+      n,
+      padX,
+      padY,
+      apexX,
+      apexY,
+      radius: k === sizes.length - 1 ? radius : radius * (0.82 + rng() * 0.12),
+      drag,
+      fallRate: Math.min(FW_FALL_RATE, drag * 0.5),
+      terminal: FW_TERMINAL,
+      rise: Math.max(FW_RISE_MIN_MS, Math.ceil((2 * distance) / FW_SPEED)),
+      hue: FW_HUES[k % FW_HUES.length],
+      twist: rng() * TAU,
+    };
+  });
+
+  let cursor = 0;
+  const items = ordered.map(({ card, pile }) => {
+    let k = 0;
+    let j = cursor;
+    while (k < rockets.length - 1 && j >= rockets[k].n) { j -= rockets[k].n; k++; }
+    cursor++;
+    const rocket = rockets[k];
+    const n = rocket.n;
     const origin = piles[pile] || {};
-    // Same clamped scatter as the other paths: a tablet's foundation row is close to the
-    // edge, and a card may not start half off the stage or under the notch.
+    // Same clamped scatter as the other paths: nothing starts off the stage or under the notch.
     const ox = clamp(finite(origin.x) - left + (rng() - 0.5) * cardWidth * 0.3, 0, Math.max(0, width - cardWidth));
     const oy = clamp(
       finite(origin.y) - top + (rng() - 0.5) * cardHeight * 0.3,
       Math.min(topInset, height - cardHeight),
       Math.max(0, height - cardHeight),
     );
+    const ocx = ox + cardWidth / 2;
+    const ocy = oy + cardHeight / 2;
+    const slotX = (j - (n - 1) / 2) * 1.2;
+    const slotY = -j * FW_STACK_STEP;
+    const tilt = (j - (n - 1) / 2) * 0.05;
+    const dropDistance = Math.hypot(rocket.padX + slotX - ocx, padY + slotY - ocy);
+    // The drop bows toward the middle of the stage, so the rain is a curve, not a ruler.
+    const bend = Math.min(dropDistance * 0.12, 40) * (rocket.padX >= ocx ? 1 : -1);
+    const drop = Math.max(FW_DROP_MIN_MS, Math.ceil((1.5 * dropDistance + Math.PI * Math.abs(bend)) / FW_SPEED));
 
-    // One slot in the square deck. Cards keep the deck's own order, so the lattice never
-    // changes and the square-up has a fixed target.
-    const col = index % SHUFFLE_DECK_COLS;
-    const row = Math.floor(index / SHUFFLE_DECK_COLS);
-    const deckX = deckCx - cardWidth / 2 + (col - (SHUFFLE_DECK_COLS - 1) / 2) * gap;
-    const deckY = deckCy - cardHeight / 2 + (row - (rows - 1) / 2) * gap;
-
-    // Even indices are the left half, odd the right. Each half is a short fan along its own
-    // tilt, so a packet reads as a fistful of card edges rather than one rectangle.
-    const sign = index % 2 === 0 ? -1 : 1;
-    const fan = (Math.floor(index / 2) - (halfCount - 1) / 2) * step;
-    const fanX = fan * tiltCos;
-    const fanY = sign * fan * tiltSin;
-    const splitX = deckCx + sign * cardWidth * SHUFFLE_SPLIT_SEP + fanX - cardWidth / 2;
-    const splitY = deckCy - cardHeight * SHUFFLE_LIFT + fanY - cardHeight / 2;
-    const approachX = deckCx + sign * cardWidth * SHUFFLE_APPROACH_SEP + fanX - cardWidth / 2;
-    const approachY = deckCy - cardHeight * SHUFFLE_LIFT * 0.75 + fanY - cardHeight / 2;
-
-    // The gather spring is sized from the distance it covers, like the conga's entry: a card
-    // from the far foundation gets more time than one beside the deck, so no card crosses the
-    // stage faster than the frame budget allows.
-    const distance = Math.hypot(deckX - ox, deckY - oy);
-    const gather = Math.max(SHUFFLE_GATHER_MIN_MS, distance * SHUFFLE_GATHER_RATE);
-    const launch = index * SHUFFLE_STAGGER_MS;
+    // Two rings: even cards fly the full radius, odd ones a shorter one, so each burst is a
+    // flower with a centre rather than a lone circle.
+    const angle = rocket.twist + (TAU * j) / n + (rng() - 0.5) * (TAU / n) * 0.4;
+    const reachOut = rocket.radius * (j % 2 ? 0.58 : 1) * (0.92 + rng() * 0.08);
+    const speed = reachOut * drag;
+    const spinSign = rng() < 0.5 ? -1 : 1;
     return {
       id: card.id || card.suit + card.rank,
       suit: card.suit,
       rank: card.rank,
       pile,
-      launch,
-      gather,
-      gatherEnd: launch + gather,
-      squareDelay: ((index * 7) % count) / Math.max(1, count - 1) * SHUFFLE_SQUARE_SKEW_MS,
-      sign,
-      ox,
-      oy,
-      deckX,
-      deckY,
-      splitX,
-      splitY,
-      approachX,
-      approachY,
+      rocket: k,
+      j,
+      ocx,
+      ocy,
+      slotX,
+      slotY,
+      tilt,
+      bend,
+      drop,
+      vx: Math.cos(angle) * speed,
+      vy: Math.sin(angle) * speed,
+      spin: spinSign * (0.0035 + rng() * 0.0013),
+      spinEnd: spinSign * (0.0012 + rng() * 0.0008),
+      flipRate: 0.0007 + rng() * 0.0024, // wide spread, so the tumbles fall out of step
     };
   });
 
-  // The riffle waits for the slowest card to land, then every card keeps the same schedule:
-  // the beats are the deck's, not each card's. The floor keeps the shortest phone in the
-  // six-to-seven-second band.
-  const maxArrival = items.reduce((max, item) => Math.max(max, item.gatherEnd), 0);
-  const riffleStart = Math.max(SHUFFLE_MIN_RIFFLE_MS, Math.ceil(maxArrival + SHUFFLE_HOLD_MS));
-  const approachEnd = shuffleSquareStart({ riffleStart });
-  const bounceStart = approachEnd + SHUFFLE_SQUARE_MS + SHUFFLE_SQUARE_SKEW_MS;
-  const exitStart = bounceStart + SHUFFLE_BOUNCE_MS + SHUFFLE_SNAP_HOLD_MS;
-  // Down, through the home-indicator strip in the layout viewport, and fully past the bottom
-  // corner: every card is gone before the canvas hands over to the win card.
-  const offY = height + half;
-  // The top-most card in the lattice is the one with the furthest to travel to get off the
-  // bottom, so it sets the exit length.
-  const topDeckY = items.reduce((top, item) => Math.min(top, item.deckY), offY);
-  const exitDur = Math.max(SHUFFLE_EXIT_MIN_MS, (offY - topDeckY) / SHUFFLE_EXIT_SPEED);
-  // Every card starts leaving together, so the deck stays one object on the way out. The
-  // absolute time is what the sampler and the tests use to tell "on the stage" from "gone".
-  items.forEach((item) => { item.exit = exitStart; });
-  const duration = Math.ceil(exitStart + exitDur);
+  // Fire times: each shell after the last, then pull the whole show back so the very first
+  // card leaves its foundation at zero. A card lands in its tube on a fixed cadence before
+  // the shell fires, and leaves its foundation however long before that its drop needs.
+  let fireAt = 0;
+  rockets.forEach((rocket, k) => {
+    rocket.fire = fireAt;
+    fireAt += k === rockets.length - 2 ? FW_SHELL_GAP_MS + FW_FINALE_GAP_MS : FW_SHELL_GAP_MS;
+  });
+  for (const item of items) {
+    const rocket = rockets[item.rocket];
+    item.land = rocket.fire - FW_LOAD_HOLD_MS - (rocket.n - 1 - item.j) * FW_LOAD_STAGGER_MS;
+    item.launch = item.land - item.drop;
+  }
+  const shift = -Math.min(...items.map((item) => item.launch));
+  for (const rocket of rockets) {
+    rocket.fire += shift;
+    rocket.burstAt = rocket.fire + rocket.rise + FW_HANG_MS;
+  }
+
+  // When each card must still be on the stage (`leave`), and when it is fully gone (`gone`).
+  // The flight has no closed-form exit, so it is stepped once here at a fine grain; the
+  // sampler then only compares against two numbers.
+  for (const item of items) {
+    const rocket = rockets[item.rocket];
+    item.land += shift;
+    item.launch += shift;
+    item.bx = rocket.apexX + item.slotX * 0.5;
+    item.by = rocket.apexY + item.slotY * 0.5;
+    item.rot0 = item.tilt;
+    item.burstAt = rocket.burstAt;
+    let bt = 0;
+    item.leave = Infinity;
+    for (; bt < 20000; bt += 2) {
+      const p = fireworkFlight(item, rocket, bt);
+      if (item.leave === Infinity && p.cy + reach > stageBottom) item.leave = item.burstAt + bt;
+      if (p.cy - reach > height) break;
+    }
+    item.gone = item.burstAt + bt;
+  }
+  items.sort((a, b) => a.launch - b.launch);
+
+  const lastSpark = Math.max(...rockets.map((rocket) => rocket.burstAt + 900));
+  const duration = Math.ceil(Math.max(lastSpark, ...items.map((item) => item.gone)) + 1);
 
   return {
-    variant: 'shuffle',
+    variant: 'fireworks',
     duration,
     viewport: { width, height, floorY },
     geometry: {
-      riffleStart,
-      bounceStart,
-      exitStart,
-      exitDur,
-      offY,
-      bounceAmp: cardHeight * SHUFFLE_BOUNCE_AMP,
+      width,
+      height,
+      cw: cardWidth,
+      ch: cardHeight,
+      stageBottom,
+      reach,
+      rockets,
     },
     items,
   };
 }
 
-function sampleShuffle(item, geometry, tau) {
-  if (tau <= 0) return { x: item.ox, y: item.oy, alpha: 0, rotation: 0 };
+function sampleFireworks(item, geometry, tau) {
+  const { cw: w, ch: h } = geometry;
+  const at = (cx, cy, rotation, scale = 1, flip = 1, alpha = 1) => ({
+    x: cx - w / 2, y: cy - h / 2, alpha, rotation, scale, flip,
+  });
+  if (tau <= 0) return at(item.ocx, item.ocy, 0, 1, 1, 0);
   const t = tau + item.launch;
+  const rocket = geometry.rockets[item.rocket];
+  const slotCx = rocket.padX + item.slotX;
+  const slotCy = rocket.padY + item.slotY;
 
-  if (t < item.gatherEnd) {
-    const s = smoothstep(tau / item.gather);
-    return {
-      x: item.ox + (item.deckX - item.ox) * s,
-      y: item.oy + (item.deckY - item.oy) * s,
-      alpha: 1,
-      rotation: 0,
-    };
+  if (t < item.land) {
+    // The rain into the tube: a smooth drop that bows toward the middle and swings once.
+    const u = clamp(tau / item.drop, 0, 1);
+    const s = smoothstep(u);
+    return at(
+      item.ocx + (slotCx - item.ocx) * s + item.bend * Math.sin(Math.PI * u),
+      item.ocy + (slotCy - item.ocy) * s,
+      item.tilt * s + 0.5 * Math.sin(Math.PI * s) * Math.sign(item.bend || 1),
+    );
   }
 
-  if (t < geometry.riffleStart) {
-    return { x: item.deckX, y: item.deckY, alpha: 1, rotation: 0 };
+  if (t < rocket.fire) {
+    // In the tube: a squash on landing, then the whole stack shrinks into a shell.
+    const squash = 0.1 * Math.sin(Math.PI * clamp((t - item.land) / 160, 0, 1));
+    const load = smoothstep((t - (rocket.fire - 200)) / 200);
+    return at(slotCx, slotCy, item.tilt, (1 - squash) * (1 + (FW_PACKET_SCALE - 1) * load));
   }
 
-  const splitEnd = geometry.riffleStart + SHUFFLE_SPLIT_MS;
-  if (t < splitEnd) {
-    const s = smoothstep((t - geometry.riffleStart) / SHUFFLE_SPLIT_MS);
-    return {
-      x: item.deckX + (item.splitX - item.deckX) * s,
-      y: item.deckY + (item.splitY - item.deckY) * s,
-      alpha: 1,
-      rotation: item.sign * SHUFFLE_TILT * s,
-    };
+  if (t < item.burstAt) {
+    // The climb, then the hang: the shell tightens as it rises and squeezes at the top.
+    const shell = shellAt(rocket, t);
+    const tighten = 1 - 0.5 * shell.e;
+    const hang = smoothstep((t - (item.burstAt - FW_HANG_MS)) / FW_HANG_MS);
+    const wobble = 0.12 * Math.sin((t - rocket.fire) / 60) * (1 - shell.u);
+    return at(
+      shell.x + item.slotX * tighten,
+      shell.y + item.slotY * tighten,
+      item.tilt + wobble,
+      FW_PACKET_SCALE + (FW_SQUEEZE - FW_PACKET_SCALE) * hang,
+    );
   }
 
-  if (t < splitEnd + SHUFFLE_APPROACH_MS) {
-    const s = smoothstep((t - splitEnd) / SHUFFLE_APPROACH_MS);
-    return {
-      x: item.splitX + (item.approachX - item.splitX) * s,
-      y: item.splitY + (item.approachY - item.splitY) * s,
-      alpha: 1,
-      rotation: item.sign * SHUFFLE_TILT * (1 - (1 - SHUFFLE_APPROACH_TILT) * s),
-    };
-  }
+  const p = fireworkFlight(item, rocket, t - item.burstAt);
+  return at(p.cx, p.cy, p.rotation, p.scale, p.flip, t < item.gone ? 1 : 0);
+}
 
-  if (t < geometry.bounceStart) {
-    // The packets resolve into the deck one card after another, so the square-up itself is a
-    // last little riffle rather than a single-frame swap.
-    const s = smoothstep((t - shuffleSquareStart(geometry) - item.squareDelay) / SHUFFLE_SQUARE_MS);
-    return {
-      x: item.approachX + (item.deckX - item.approachX) * s,
-      y: item.approachY + (item.deckY - item.approachY) * s,
-      alpha: 1,
-      rotation: item.sign * SHUFFLE_TILT * SHUFFLE_APPROACH_TILT * (1 - s),
-    };
+// The light that goes with the shells: a sparkling trail under each climbing shell, then at
+// the burst a flash, an expanding ring and a spray of streaks, all fading. Pure numbers for
+// the renderer to draw additively; it never touches a card.
+const SPARK_MS = 900;
+const SPARK_STREAKS = 14;
+export function sampleSparks(sequence, t) {
+  if (!sequence || sequence.variant !== 'fireworks') return [];
+  const out = [];
+  for (const rocket of sequence.geometry.rockets) {
+    if (t >= rocket.fire && t < rocket.burstAt) {
+      for (let i = 0; i < 7; i++) {
+        const tt = t - i * 26;
+        if (tt < rocket.fire) break;
+        const p = shellAt(rocket, tt);
+        const jitter = Math.sin(tt * 0.37 + i) * 3;
+        out.push({
+          kind: 'dot',
+          x: p.x + jitter,
+          y: p.y + sequence.geometry.ch * 0.35 + i * 2,
+          r: Math.max(0.8, 3.2 - i * 0.35),
+          alpha: (1 - i / 7) * 0.9 * (1 - p.u * 0.5),
+          hue: rocket.hue,
+        });
+      }
+    }
+    const bt = t - rocket.burstAt;
+    if (bt >= 0 && bt < SPARK_MS) {
+      const life = bt / SPARK_MS;
+      const grow = 1 - (1 - Math.min(bt / 600, 1)) ** 3;
+      if (bt < 260) {
+        out.push({
+          kind: 'flash', x: rocket.apexX, y: rocket.apexY,
+          r: rocket.radius * (0.35 + 0.5 * (bt / 260)), alpha: (1 - bt / 260) ** 2, hue: rocket.hue,
+        });
+      }
+      out.push({
+        kind: 'ring', x: rocket.apexX, y: rocket.apexY,
+        r: rocket.radius * 1.15 * grow, alpha: (1 - life) ** 2 * 0.8, hue: rocket.hue,
+      });
+      for (let i = 0; i < SPARK_STREAKS; i++) {
+        const a = rocket.twist + (TAU * (i + 0.5)) / SPARK_STREAKS;
+        const r1 = rocket.radius * 1.3 * grow;
+        out.push({
+          kind: 'streak',
+          x: rocket.apexX + Math.cos(a) * r1 * 0.7,
+          y: rocket.apexY + Math.sin(a) * r1 * 0.7 + 40 * life * life,
+          x2: rocket.apexX + Math.cos(a) * r1,
+          y2: rocket.apexY + Math.sin(a) * r1 + 60 * life * life,
+          r: 2,
+          alpha: (1 - life) * 0.9,
+          hue: rocket.hue,
+        });
+      }
+    }
   }
-
-  if (t < geometry.exitStart) {
-    const u = clamp((t - geometry.bounceStart) / SHUFFLE_BOUNCE_MS, 0, 1);
-    return {
-      x: item.deckX,
-      y: item.deckY - geometry.bounceAmp * Math.sin(Math.PI * u),
-      alpha: 1,
-      rotation: 0,
-    };
-  }
-
-  // The squared deck leaves as one: straight down, still opaque until the last corner is off
-  // the bottom, then gone. No per-card fade; the canvas fade owns the ending.
-  const u = clamp((t - geometry.exitStart) / geometry.exitDur, 0, 1);
-  return {
-    x: item.deckX,
-    y: item.deckY + (geometry.offY - item.deckY) * u,
-    alpha: u < 1 ? 1 : 0,
-    rotation: 0,
-  };
+  return out;
 }
 
 // ---------- Fan (the flourish) ----------
@@ -894,7 +1006,7 @@ const FAN_SHALLOW = 1.35;         // shallowest slot. Real fans hold the outer c
                                   // bottom edge when they tip wide.
 const FAN_FOLD_SPREAD = 0.35;     // rad the folded packet still holds open, about 20 degrees
 const FAN_STAGGER_MS = 14;        // one card leaves its foundation every 14ms
-const FAN_GATHER_RATE = 1.55;     // ms of spring per px of gap, as the shuffle's gather:
+const FAN_GATHER_RATE = 1.55;     // ms of spring per px of gap, as the old shuffle's gather:
                                   // smoothstep peaks at 1.5x the average speed and that is
                                   // the frame budget, so the rate is deliberately the cap.
 const FAN_GATHER_MIN_MS = 500;
@@ -1196,7 +1308,7 @@ const SAMPLERS = {
   waterfall: (item, tau) => sampleWaterfall(item, tau),
   vortex: (item, tau, geometry) => sampleVortex(item, geometry, tau),
   conga: (item, tau, geometry) => sampleConga(item, geometry, tau),
-  shuffle: (item, tau, geometry) => sampleShuffle(item, geometry, tau),
+  fireworks: (item, tau, geometry) => sampleFireworks(item, geometry, tau),
   fan: (item, tau, geometry) => sampleFan(item, geometry, tau),
 };
 
@@ -1204,7 +1316,7 @@ export function buildWinSequence(options = {}) {
   // An unknown name is a coding mistake, not a reason to leave a win uncelebrated: the
   // waterfall is the fallback everywhere else, so it is the fallback here too.
   if (options.variant === 'fan') return buildFan(options);
-  if (options.variant === 'shuffle') return buildShuffle(options);
+  if (options.variant === 'fireworks') return buildFireworks(options);
   if (options.variant === 'conga') return buildConga(options);
   if (options.variant === 'vortex') return buildVortex(options);
   return buildWaterfall(options);
@@ -1223,6 +1335,9 @@ export function sampleSequence(sequence, t) {
       y: point.y,
       alpha: point.alpha,
       rotation: finite(point.rotation),
+      // Optional channels: a path that never sets them draws at full size, face up.
+      scale: finite(point.scale, 1),
+      flip: finite(point.flip, 1),
     };
   });
 }
