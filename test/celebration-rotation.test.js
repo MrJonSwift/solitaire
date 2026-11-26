@@ -53,18 +53,19 @@ test('a full cycle visits every celebration before repeating, and never twice in
 // list that never repeats a neighbour once the dances drop out.
 test('the shipped rotation never repeats a neighbour, with and without WebGL', () => {
   // Node has no WebGL, so this is the degraded list a phone without it would get; it has
-  // to be exactly the full rotation minus the two dances.
-  const withoutGL = CELEBRATIONS.filter((v) => v !== 'dancer' && v !== 'sultry');
+  // to be exactly the full rotation minus the dance.
+  const withoutGL = CELEBRATIONS.filter((v) => v !== 'sultry');
   assert.deepEqual(availableCelebrations(), withoutGL);
   for (const list of [CELEBRATIONS, withoutGL]) {
     for (let i = 0; i < list.length; i++) {
       assert.notEqual(list[i], list[(i + 1) % list.length], `${list[i]} sits next to itself`);
     }
   }
-  // The two card dances share one body, so they read as the same celebration.
-  assert.ok(Math.abs(CELEBRATIONS.indexOf('sultry') - CELEBRATIONS.indexOf('dancer')) > 1);
+  // Retired: the stiff-legged salsa and the shuffle. A stored index past the end simply
+  // starts again, so a phone that remembered either one is not stranded.
+  assert.ok(!CELEBRATIONS.includes('dancer') && !CELEBRATIONS.includes('shuffle'));
 });
 
 test('the newest celebration is met early', () => {
-  assert.equal(CELEBRATIONS[0], 'sultry');
+  assert.equal(CELEBRATIONS[0], 'fireworks');
 });

@@ -289,7 +289,7 @@ test('every conga card starts on the stage', () => {
   for (const item of sequence.items) {
     const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
     assert.ok(card.alpha > 0, `${item.id} is invisible at its launch`);
-    assert.ok(inside(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+    assert.ok(insideDrawn(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
   }
 });
 
@@ -308,7 +308,7 @@ test('the conga chain stays on the stage and never returns a NaN', () => {
       // item.exit is an absolute time, not a per-card duration: a card that has reached
       // the gap is flying off the stage on purpose.
       if (tau <= 0 || t >= item.exit) continue;
-      assert.ok(inside(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
+      assert.ok(insideDrawn(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
     }
   }
 });
@@ -334,13 +334,19 @@ test('a conga seed is repeatable, and a different seed is a different pass', () 
   assert.notDeepEqual(conga(12).items, a.items);
 });
 
-test('conga alphas are on or off and the tip never over-rotates', () => {
+test('conga alphas are on or off and the tip never over-rotates on the line', () => {
+  // On the line a card may sway (0.2rad) plus kick (0.22rad); only once it is out of the
+  // door is it allowed to spin freely.
   const sequence = conga();
   for (let t = 0; t <= sequence.duration; t += 25) {
-    for (const card of sampleSequence(sequence, t)) {
+    const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const item of sequence.items) {
+      const card = byId.get(item.id);
       assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
       assert.ok(Number.isFinite(card.rotation), `${card.id} rotation is not finite at ${t}ms`);
-      assert.ok(Math.abs(card.rotation) <= 0.2 + 1e-9, `${card.id} tips ${card.rotation}rad at ${t}ms`);
+      if (t >= item.exit) continue;
+      assert.ok(Math.abs(card.rotation) <= 0.42 + 1e-9, `${card.id} tips ${card.rotation}rad at ${t}ms`);
+      assert.ok(card.scale >= 1 && card.scale <= 1.14 + 1e-9, `${card.id} drawn at scale ${card.scale}`);
     }
   }
 });
@@ -382,7 +388,7 @@ test('the conga frames itself from a 320px phone to a landscape iPad, without a 
 
     for (const item of sequence.items) {
       const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
-      assert.ok(card.alpha > 0 && inside(card, bounds),
+      assert.ok(card.alpha > 0 && insideDrawn(card, bounds),
         `${stage.name}: ${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
     }
 
@@ -392,7 +398,7 @@ test('the conga frames itself from a 320px phone to a landscape iPad, without a 
         const tau = t - item.launch;
         if (tau <= 0 || t >= item.exit) continue;
         const card = byId.get(item.id);
-        assert.ok(inside(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
+        assert.ok(insideDrawn(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
       }
     }
 
@@ -436,7 +442,7 @@ test('the conga stays under the notch, not just above the home indicator', () =>
       const tau = t - item.launch;
       if (tau <= 0 || t >= item.exit) continue;
       const card = byId.get(item.id);
-      assert.ok(inside(card, bounds),
+      assert.ok(insideDrawn(card, bounds),
         `${item.id} crosses the notch at ${t}ms (y=${card.y.toFixed(1)})`);
     }
   }
@@ -461,190 +467,73 @@ test('the conga length lands in its band at both ends of the stage sweep', () =>
   assert.ok(long >= 7999 && long <= 8000, `huge stage lasted ${long}ms, not the 8s ceiling`);
 });
 
-// ---------- Shuffle ----------
-const shuffle = (seed = 7) => build(seed, 'shuffle');
-
-test('the shuffle uses all 52 cards exactly once, and says so', () => {
-  const sequence = shuffle();
-  assert.equal(sequence.variant, 'shuffle');
-  assert.equal(sequence.items.length, 52);
-  assert.equal(new Set(sequence.items.map((item) => item.id)).size, 52);
-});
-
-test('a shuffle pass lasts between six and seven seconds', () => {
-  const { duration } = shuffle();
-  assert.ok(duration >= 6000, `duration ${duration}ms is shorter than 6s`);
-  assert.ok(duration <= 7000, `duration ${duration}ms is longer than 7s`);
-});
-
-test('every shuffle card starts on the stage', () => {
-  const sequence = shuffle();
-  for (const item of sequence.items) {
-    const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
-    assert.ok(card.alpha > 0, `${item.id} is invisible at its launch`);
-    assert.ok(inside(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
-  }
-});
-
-test('the shuffle deck stays on the stage and never returns a NaN', () => {
-  const sequence = shuffle();
-  for (let t = 0; t <= sequence.duration; t += 25) {
-    const cards = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
-    assert.equal(cards.size, 52, `sample at ${t}ms lost cards`);
-    for (const item of sequence.items) {
-      const card = cards.get(item.id);
-      assert.ok(Number.isFinite(card.x), `${card.id} x is not finite at ${t}ms`);
-      assert.ok(Number.isFinite(card.y), `${card.id} y is not finite at ${t}ms`);
-      assert.ok(Number.isFinite(card.rotation), `${card.id} rotation is not finite at ${t}ms`);
-      const tau = t - item.launch;
-      // Not launched yet, or already sliding off the stage on purpose at the very end.
-      if (tau <= 0 || t >= item.exit) continue;
-      assert.ok(inside(card), `${card.id} is cropped at ${t}ms (x=${card.x}, y=${card.y})`);
-    }
-  }
-});
-
-test('the shuffle ends on an empty board', () => {
-  const sequence = shuffle();
-  const cards = sampleSequence(sequence, sequence.duration);
-  assert.equal(cards.length, 52);
-  for (const card of cards) {
-    // The deck slides off the stage as one before the sequence ends, so the win card opens
-    // on an empty board. No card is left for the canvas fade to take out.
-    assert.equal(card.alpha, 0, `${card.id} is still on the board at the end`);
-  }
-});
-
-test('shuffle alphas are on or off, never a private fade', () => {
-  const sequence = shuffle();
-  for (let t = 0; t <= sequence.duration; t += 25) {
-    for (const card of sampleSequence(sequence, t)) {
-      assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
-    }
-  }
-});
-
-test('the shuffle exit is one steady slide off the bottom', () => {
-  // The exit is deliberately off the stage: the deck leaves through the bottom edge, and the
-  // win card opens behind it. Wrong direction, sideways drift or a frame jump in that
-  // hand-over would otherwise be invisible to the tests that stop at item.exit.
-  const sequence = shuffle();
-  const frame = 16;
-  for (const item of sequence.items) {
-    let previous = null;
-    for (let t = item.exit; t <= sequence.duration; t += frame) {
-      const card = sampleSequence(sequence, t).find((c) => c.id === item.id);
-      if (previous && previous.alpha > 0 && card.alpha > 0) {
-        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
-        assert.ok(moved <= 16, `${item.id} jumped ${moved.toFixed(1)}px at ${t}ms`);
-        assert.ok(card.y >= previous.y - 1e-9, `${item.id} moved back up at ${t}ms`);
-        assert.ok(Math.abs(card.x - previous.x) < 1e-9, `${item.id} drifted sideways at ${t}ms`);
-      }
-      previous = card;
-    }
-    const end = sampleSequence(sequence, sequence.duration).find((c) => c.id === item.id);
-    assert.equal(end.alpha, 0, `${item.id} is still on the stage at the end`);
-  }
-});
-
-test('the shuffle frames itself from a 320px phone to a landscape iPad, without a jump', () => {
-  const stages = [
-    { name: 'smallest phone', width: 320, height: 568, cw: 42, ch: 59 },
-    { name: 'phone', width: 393, height: 852, cw: 48, ch: 67 },
-    { name: 'iPad', width: 1024, height: 768, cw: 105, ch: 147 },
-    { name: 'iPad Pro landscape', width: 1366, height: 1024, cw: 130, ch: 182 },
-    { name: 'wide desktop', width: 1920, height: 1080, cw: 160, ch: 224 },
-  ];
-  for (const stage of stages) {
-    const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
-    const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
-      x: 12 + i * (stage.cw + 6),
-      y: 8,
-      cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
-    }));
-    const view = {
-      width: stage.width,
-      height: stage.height,
-      left: 0,
-      top: 0,
-      floorY: stage.height - 34 - stage.ch,
-    };
-    const sequence = buildWinSequence({
-      variant: 'shuffle', cards, piles, cw: stage.cw, ch: stage.ch, viewport: view, seed: 9,
-    });
-    const bounds = {
-      width: stage.width,
-      top: 0,
-      bottom: view.floorY + stage.ch,
-      cw: stage.cw,
-      ch: stage.ch,
-    };
-
-    for (const item of sequence.items) {
-      const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
-      assert.ok(card.alpha > 0 && inside(card, bounds),
-        `${stage.name}: ${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
-    }
-
-    for (let t = 0; t <= sequence.duration; t += 25) {
-      const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
-      for (const item of sequence.items) {
-        const tau = t - item.launch;
-        if (tau <= 0 || t >= item.exit) continue;
-        const card = byId.get(item.id);
-        assert.ok(inside(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
-      }
-    }
-
-    const frame = 16;
-    for (let t = 0; t + frame <= sequence.duration; t += 50) {
-      const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
-      for (const card of sampleSequence(sequence, t + frame)) {
-        const previous = before.get(card.id);
-        if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
-        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
-        assert.ok(moved <= 16, `${stage.name}: ${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
-      }
-    }
-
-    assert.equal(sampleSequence(sequence, sequence.duration).filter((c) => c.alpha > 0).length, 0,
-      `${stage.name}: the board is not empty at the end`);
-    assert.ok(sequence.duration >= 6000, `${stage.name}: duration ${sequence.duration}ms is under 6s`);
-    assert.ok(sequence.duration <= 7000, `${stage.name}: duration ${sequence.duration}ms is over 7s`);
-  }
-});
-
-test('the shuffle stays under the notch, not just above the home indicator', () => {
-  const notch = 59;
-  const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
-  const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
-    x: 12 + i * (cw + 6),
-    y: notch + 8,
-    cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
-  }));
-  const view = { ...viewport, top: 0, topInset: notch };
-  const sequence = buildWinSequence({
-    variant: 'shuffle', cards, piles, cw, ch, viewport: view, seed: 4,
-  });
-  const bounds = { ...phoneStage, top: notch };
-  for (let t = 0; t <= sequence.duration; t += 25) {
+test('the conga dances to a beat: the kick lifts the line and rolls down it', () => {
+  const sequence = conga();
+  const g = sequence.geometry;
+  // Over one bar in the middle of the dance, every card on the line kicks at least once,
+  // and at any instant during the kick only part of the line is up: it is a wave.
+  const onLine = (t) => sequence.items.filter((item) => t > item.launch + item.entry && t < item.exit);
+  const start = 3500;
+  const kicked = new Set();
+  let partial = 0;
+  for (let t = start; t < start + 1680; t += 20) {
     const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
-    for (const item of sequence.items) {
-      const tau = t - item.launch;
-      if (tau <= 0 || t >= item.exit) continue;
-      const card = byId.get(item.id);
-      assert.ok(inside(card, bounds),
-        `${item.id} crosses the notch at ${t}ms (y=${card.y.toFixed(1)})`);
-    }
+    const live = onLine(t);
+    const up = live.filter((item) => byId.get(item.id).scale > 1.07);
+    up.forEach((item) => kicked.add(item.id));
+    if (up.length > 0 && up.length < live.length) partial++;
   }
+  const wanted = onLine(start).filter((item) => onLine(start + 1680).includes(item));
+  for (const item of wanted) assert.ok(kicked.has(item.id), `${item.id} never kicked`);
+  assert.ok(partial > 10, 'the kick did not travel along the line');
+  assert.ok(g.hop > ch * 0.18, `the hop is only ${g.hop}px`);
 });
 
-test('a shuffle seed is repeatable, and a different seed is a different pass', () => {
-  const a = shuffle(11);
-  const b = shuffle(11);
-  assert.deepEqual(a.items, b.items);
-  assert.deepEqual(sampleSequence(a, 1234), sampleSequence(b, 1234));
-  assert.notDeepEqual(shuffle(12).items, a.items);
+test('the conga exit is a fling, not a slide: it speeds up, spins and flips', () => {
+  const sequence = conga();
+  for (const item of sequence.items) {
+    const at = (t) => sampleSequence(sequence, t).find((c) => c.id === item.id);
+    const a = at(item.exit + 40);
+    const b = at(item.exit + 56);
+    const c = at(Math.min(item.flight - 17, item.exit + 400));
+    const d = at(Math.min(item.flight - 1, item.exit + 416));
+    if (c.alpha === 0 || d.alpha === 0) continue;
+    const early = Math.hypot(b.x - a.x, b.y - a.y);
+    const late = Math.hypot(d.x - c.x, d.y - c.y);
+    assert.ok(late > early * 1.5, `${item.id} did not accelerate (${early.toFixed(1)} then ${late.toFixed(1)})`);
+  }
+  // Spin and tumble: judged on the cards whose flight is long enough to see (the door sits
+  // near an edge, so some cards are off within a fraction of a second).
+  const spun = new Set();
+  const flipped = new Set();
+  const seen = sequence.items.filter((item) => item.flight - item.exit >= 300);
+  for (const item of seen) {
+    const atDoor = sampleSequence(sequence, item.exit).find((c) => c.id === item.id);
+    for (let t = item.exit; t < item.flight; t += 10) {
+      const card = sampleSequence(sequence, t).find((c) => c.id === item.id);
+      if (Math.abs(card.rotation - atDoor.rotation) > 0.3) spun.add(card.id);
+      if (card.flip < 0) flipped.add(card.id);
+    }
+  }
+  assert.ok(seen.length >= 26, `only ${seen.length} cards have a visible exit`);
+  assert.ok(spun.size >= seen.length * 0.8, `only ${spun.size} of ${seen.length} cards spun on the way out`);
+  assert.ok(flipped.size >= seen.length * 0.5, `only ${flipped.size} cards flipped on the way out`);
+});
+
+test('the conga never teleports or snaps a tilt between frames', () => {
+  const sequence = conga();
+  for (let t = 0; t + 16 <= sequence.duration; t += 10) {
+    const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const card of sampleSequence(sequence, t + 16)) {
+      const previous = before.get(card.id);
+      if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+      const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+      assert.ok(moved <= 16, `${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+      const spun = Math.abs(card.rotation - previous.rotation);
+      assert.ok(spun <= (6 * Math.PI) / 180, `${card.id} spun ${((spun * 180) / Math.PI).toFixed(1)} degrees at ${t}ms`);
+      assert.ok(Math.abs(card.scale - previous.scale) <= 0.08, `${card.id} jumped in size at ${t}ms`);
+    }
+  }
 });
 
 test('the vortex frames itself on a tablet as well as on a phone', () => {
@@ -968,4 +857,213 @@ test('a fan seed is repeatable, and a different seed is a different pass', () =>
   assert.deepEqual(a.items, b.items);
   assert.deepEqual(sampleSequence(a, 1234), sampleSequence(b, 1234));
   assert.notDeepEqual(fan(12).items, a.items);
+});
+
+// ---------- Fireworks ----------
+const fireworks = (seed = 7) => build(seed, 'fireworks');
+
+// A firework card is drawn scaled and flipped as well as rotated, so "inside" has to measure
+// the drawn rectangle: the pop makes it bigger, and the flip makes it narrower.
+const insideDrawn = (card, stage = phoneStage) => {
+  const s = card.scale;
+  const w = stage.cw * s * Math.abs(card.flip);
+  const h = stage.ch * s;
+  const cos = Math.abs(Math.cos(card.rotation));
+  const sin = Math.abs(Math.sin(card.rotation));
+  const ex = (cos * w + sin * h) / 2;
+  const ey = (sin * w + cos * h) / 2;
+  const cx = card.x + stage.cw / 2;
+  const cy = card.y + stage.ch / 2;
+  return cx - ex >= -0.6 && cx + ex <= stage.width + 0.6
+    && cy - ey >= stage.top - 0.6 && cy + ey <= stage.bottom + 0.6;
+};
+
+const fireworkStages = [
+  { name: 'smallest phone', width: 320, height: 568, cw: 42, ch: 59 },
+  { name: 'phone', width: 393, height: 852, cw: 48, ch: 67 },
+  { name: 'short window', width: 320, height: 240, cw: 30, ch: 42 },
+  { name: 'iPad', width: 1024, height: 768, cw: 105, ch: 147 },
+  { name: 'iPad Pro landscape', width: 1366, height: 1024, cw: 130, ch: 182 },
+  { name: 'very wide', width: 2400, height: 1080, cw: 160, ch: 224 },
+];
+
+function fireworksOn(stage, { seed = 9, topInset = 0 } = {}) {
+  const cards = createDeck().map((c) => ({ ...c, faceUp: true }));
+  const piles = ['S', 'H', 'D', 'C'].map((suit, i) => ({
+    x: 12 + i * (stage.cw + 6),
+    y: topInset + 8,
+    cards: cards.filter((c) => c.suit === suit).sort((a, b) => a.rank - b.rank),
+  }));
+  const view = {
+    width: stage.width, height: stage.height, left: 0, top: 0, topInset,
+    floorY: stage.height - 34 - stage.ch,
+  };
+  const sequence = buildWinSequence({
+    variant: 'fireworks', cards, piles, cw: stage.cw, ch: stage.ch, viewport: view, seed,
+  });
+  const bounds = {
+    width: stage.width, top: topInset, bottom: view.floorY + stage.ch, cw: stage.cw, ch: stage.ch,
+  };
+  return { sequence, bounds };
+}
+
+test('the fireworks use all 52 cards exactly once, and say so', () => {
+  const sequence = fireworks();
+  assert.equal(sequence.variant, 'fireworks');
+  assert.equal(sequence.items.length, 52);
+  assert.equal(new Set(sequence.items.map((item) => item.id)).size, 52);
+  assert.equal(sequence.geometry.rockets.length, 6);
+  assert.equal(sequence.geometry.rockets.reduce((sum, r) => sum + r.n, 0), 52);
+});
+
+test('every firework card starts on the stage, at its own foundation', () => {
+  const { piles } = board();
+  const sequence = fireworks();
+  for (const item of sequence.items) {
+    const card = sampleSequence(sequence, item.launch + 1).find((c) => c.id === item.id);
+    assert.ok(card.alpha > 0, `${item.id} is invisible at its launch`);
+    assert.ok(insideDrawn(card), `${item.id} starts off the stage (x=${card.x}, y=${card.y})`);
+    assert.ok(Math.abs(card.y - piles[item.pile].y) <= ch * 0.15 + 5, `${item.id} did not start at its pile`);
+  }
+});
+
+test('firework alphas are on or off, and no channel is ever NaN', () => {
+  const sequence = fireworks();
+  for (let t = 0; t <= sequence.duration; t += 25) {
+    const cards = sampleSequence(sequence, t);
+    assert.equal(cards.length, 52, `sample at ${t}ms lost cards`);
+    for (const card of cards) {
+      for (const key of ['x', 'y', 'rotation', 'scale', 'flip']) {
+        assert.ok(Number.isFinite(card[key]), `${card.id} ${key} is not finite at ${t}ms`);
+      }
+      assert.ok(card.alpha === 0 || card.alpha === 1, `${card.id} has a private fade (${card.alpha})`);
+      assert.ok(card.scale > 0.5 && card.scale <= 1.16, `${card.id} drawn at scale ${card.scale}`);
+      assert.ok(Math.abs(card.flip) <= 1, `${card.id} flip ${card.flip}`);
+    }
+  }
+});
+
+test('the shells really burst: cards fly out in every direction and tumble over', () => {
+  const sequence = fireworks();
+  for (const [k, rocket] of sequence.geometry.rockets.entries()) {
+    const ids = new Set(sequence.items.filter((item) => item.rocket === k).map((item) => item.id));
+    const at = (t) => sampleSequence(sequence, t).filter((c) => ids.has(c.id));
+    // At the burst the shell is one tight packet; a quarter of a second later it is a flower.
+    const before = at(rocket.burstAt - 1);
+    const after = at(rocket.burstAt + 250);
+    const spread = (cards) => {
+      const xs = cards.map((c) => c.x);
+      const ys = cards.map((c) => c.y);
+      return Math.max(Math.max(...xs) - Math.min(...xs), Math.max(...ys) - Math.min(...ys));
+    };
+    assert.ok(spread(before) < cw * 0.6, `shell ${k} is not a packet before it bursts`);
+    assert.ok(spread(after) > rocket.radius * 0.8, `shell ${k} spread only ${spread(after).toFixed(0)}px`);
+    // Directions: the cards leave the apex on every side, not as a jet.
+    const left = after.filter((c) => c.x + cw / 2 < rocket.apexX - 5).length;
+    const right = after.filter((c) => c.x + cw / 2 > rocket.apexX + 5).length;
+    const up = after.filter((c) => c.y + ch / 2 < rocket.apexY - 5).length;
+    assert.ok(left > 0 && right > 0 && up > 0, `shell ${k} did not burst all round`);
+    // The pop: cards are drawn larger than at rest shortly after the burst.
+    assert.ok(at(rocket.burstAt + 160).some((c) => c.scale > 1.05), `shell ${k} did not pop`);
+  }
+  // The tumble: over the whole show, plenty of cards are seen showing their backs.
+  const backs = new Set();
+  for (let t = 0; t <= sequence.duration; t += 50) {
+    for (const card of sampleSequence(sequence, t)) if (card.alpha > 0 && card.flip < 0) backs.add(card.id);
+  }
+  assert.ok(backs.size >= 40, `only ${backs.size} cards ever flipped over`);
+});
+
+test('the fireworks end on an empty board, and every card is seen leaving', () => {
+  const sequence = fireworks();
+  assert.equal(sampleSequence(sequence, sequence.duration).filter((c) => c.alpha > 0).length, 0);
+  const height = viewport.height;
+  for (const item of sequence.items) {
+    // Opaque right up to its alpha boundary, and by then wholly below the stage.
+    const last = sampleSequence(sequence, item.gone - 1e-6).find((c) => c.id === item.id);
+    assert.equal(last.alpha, 1, `${item.id} is gone before its own boundary`);
+    const reach = (Math.hypot(cw, ch) / 2) * last.scale;
+    assert.ok(last.y + ch / 2 - reach >= height - 1, `${item.id} vanished while still on screen`);
+    // And it spends real time falling through the stage after it leaves the band.
+    assert.ok(item.gone - item.leave >= 60, `${item.id} crossed the bottom in ${item.gone - item.leave}ms`);
+  }
+  // Midway through the last shell's fall, its cards are live and on the stage, not past it.
+  const finale = sequence.geometry.rockets.at(-1);
+  const ids = new Set(sequence.items.filter((item) => item.rocket === 5).map((item) => item.id));
+  const mid = sampleSequence(sequence, finale.burstAt + 400).filter((c) => ids.has(c.id));
+  assert.ok(mid.filter((c) => c.alpha > 0 && insideDrawn(c)).length >= ids.size * 0.75,
+    'the finale has left the stage before it could be seen');
+});
+
+test('the fireworks frame themselves from a 320px phone to a very wide stage, without a jump', () => {
+  for (const stage of fireworkStages) {
+    const { sequence, bounds } = fireworksOn(stage);
+    assert.ok(sequence.duration >= 5000, `${stage.name}: duration ${sequence.duration}ms is under 5s`);
+    assert.ok(sequence.duration <= 9000, `${stage.name}: duration ${sequence.duration}ms is over 9s`);
+
+    for (let t = 0; t <= sequence.duration; t += 25) {
+      const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const item of sequence.items) {
+        // Launched and not yet falling out through the bottom: every pixel on the stage,
+        // pop, tilt and tumble included.
+        if (t <= item.launch || t >= item.leave) continue;
+        const card = byId.get(item.id);
+        assert.ok(insideDrawn(card, bounds), `${stage.name}: ${item.id} is cropped at ${t}ms`);
+      }
+    }
+
+    // Position and rotation both: a hand-over can swap a tilt in one frame.
+    const frame = 16;
+    for (let t = 0; t + frame <= sequence.duration; t += 10) {
+      const before = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+      for (const card of sampleSequence(sequence, t + frame)) {
+        const previous = before.get(card.id);
+        if (!previous || previous.alpha <= 0 || card.alpha <= 0) continue;
+        const moved = Math.hypot(card.x - previous.x, card.y - previous.y);
+        assert.ok(moved <= 16, `${stage.name}: ${card.id} moved ${moved.toFixed(1)}px in 16ms at ${t}ms`);
+        const spun = Math.abs(card.rotation - previous.rotation);
+        assert.ok(spun <= (6 * Math.PI) / 180,
+          `${stage.name}: ${card.id} spun ${((spun * 180) / Math.PI).toFixed(1)} degrees at ${t}ms`);
+        assert.ok(Math.abs(card.scale - previous.scale) <= 0.12,
+          `${stage.name}: ${card.id} jumped in size at ${t}ms`);
+      }
+    }
+    assert.equal(sampleSequence(sequence, sequence.duration).filter((c) => c.alpha > 0).length, 0,
+      `${stage.name}: the board is not empty at the end`);
+  }
+});
+
+test('the fireworks stay under the notch', () => {
+  const notch = 59;
+  const { sequence, bounds } = fireworksOn(fireworkStages[1], { topInset: notch, seed: 4 });
+  for (let t = 0; t <= sequence.duration; t += 20) {
+    const byId = new Map(sampleSequence(sequence, t).map((card) => [card.id, card]));
+    for (const item of sequence.items) {
+      if (t <= item.launch || t >= item.leave) continue;
+      const card = byId.get(item.id);
+      assert.ok(insideDrawn(card, bounds), `${item.id} crosses the notch at ${t}ms (y=${card.y.toFixed(1)})`);
+    }
+  }
+});
+
+test('a fireworks seed is repeatable, and a different seed is a different show', () => {
+  const a = fireworks(11);
+  const b = fireworks(11);
+  assert.deepEqual(a.items, b.items);
+  assert.deepEqual(sampleSequence(a, 3456), sampleSequence(b, 3456));
+  assert.notDeepEqual(fireworks(12).items, a.items);
+});
+
+test('sparks belong to the fireworks only, and fade out with their shells', async () => {
+  const { sampleSparks } = await import('../js/choreography.js');
+  assert.deepEqual(sampleSparks(fan(), 2000), []);
+  const sequence = fireworks();
+  const r = sequence.geometry.rockets[0];
+  assert.ok(sampleSparks(sequence, r.fire + 100).some((s) => s.kind === 'dot'), 'no trail on the climb');
+  const burst = sampleSparks(sequence, r.burstAt + 50);
+  assert.ok(burst.some((s) => s.kind === 'flash') && burst.some((s) => s.kind === 'ring'), 'no burst light');
+  for (const s of burst) {
+    assert.ok(Number.isFinite(s.x) && Number.isFinite(s.y) && s.alpha >= 0 && s.alpha <= 1);
+  }
+  assert.deepEqual(sampleSparks(sequence, sequence.duration), []);
 });

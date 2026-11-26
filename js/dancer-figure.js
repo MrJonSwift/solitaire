@@ -2,7 +2,7 @@
 // card-shaped planes, and the `queen` treatment that was judged for this figure. The skirt
 // is a two-tier fan, the head is a queen card with card hair behind it, and the hands and
 // shoes are authored clusters rather than tubes. Look is settled: change the dance in
-// dancer-motion.js, not the geometry here.
+// dancer-motion-sultry.js, not the geometry here.
 import * as THREE from '../vendor/three.module.js';
 import { makeCardTextures, CARD_W, CARD_H } from './dancer-cards.js';
 

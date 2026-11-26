@@ -1,10 +1,9 @@
 // The card dancer's renderer: one transparent WebGL layer over the board, one loop of the
 // rig from dancer-figure.js, then a fade so the win card can follow. Lifecycle only.
 // The dispatcher in celebrate.js decides whether this runs at all, which dance plays, and
-// owns the skip tap. One body, more than one dance: the dance only changes the numbers.
+// owns the skip tap. One body; a dance only changes the numbers.
 import * as THREE from '../vendor/three.module.js';
 import { createFigure } from './dancer-figure.js';
-import * as salsa from './dancer-motion.js';
 import * as sultry from './dancer-motion-sultry.js';
 import { readStage, FADE_MS, SKIP_FADE_MS } from './celebration-stage.js';
 
@@ -17,7 +16,7 @@ const BASE_TARGET = new THREE.Vector3(0, 1.02, 0);
 // the safe rectangle, so a raised hand cannot land under the notch or home indicator.
 const FIT_FILL = 0.875;
 
-const DANCES = { salsa, sultry };
+const DANCES = { sultry };
 
 let active = null;
 
@@ -72,7 +71,7 @@ function releaseDancer(resources) {
   }
 }
 
-export function startDancer(dance = 'salsa') {
+export function startDancer(dance = 'sultry') {
   cancelDancer();
   const canvas = createLayer();
 
@@ -88,7 +87,7 @@ export function startDancer(dance = 'salsa') {
   };
 
   try {
-    return buildDancer(canvas, resources, DANCES[dance] || salsa);
+    return buildDancer(canvas, resources, DANCES[dance] || sultry);
   } catch (err) {
     releaseDancer(resources);
     canvas.remove();
